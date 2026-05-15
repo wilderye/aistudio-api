@@ -29,7 +29,7 @@ cd aistudio-api
 pip install -r requirements.txt
 
 # 启动服务
-python3 main.py server --port 8080 --camoufox-port 9222
+python3 main.py server --port 8080
 ```
 
 ### Docker 部署
@@ -46,8 +46,8 @@ docker run -d \
 #### 有头模式，适合本地
 首次启动后，访问 http://localhost:8080 进行 Google 账号登录，支持浏览器登录和手动导入cookies（访问）。
 ![alt text](image/login.png)
-#### 使用 cookies 登录(目前仅支持chromium系)
-访问 https://myaccount.google.com/ ，复制 cookies 导入
+#### 使用 cookies 登录
+访问 https://myaccount.google.com/ ，复制 cookies 导入。仅测试过 chrome->cloakbrowser，跨内核可能不支持。重启生效。
 ![alt text](image/cookie.png)
 ## 使用示例
 

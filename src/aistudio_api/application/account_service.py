@@ -69,13 +69,14 @@ class AccountService:
 
         async def _do_switch():
             # 获取 auth 路径
-            auth_path = self._store.get_auth_path(account_id)
+            auth_path = self._store.get_auth_path_optional(account_id, require_exists=False)
             if auth_path is None:
-                logger.error("账号 %s 的 auth.json 不存在", account_id)
+                logger.error("账号 %s 的账号目录不存在", account_id)
                 return None
 
             # 切换 BrowserSession 的 auth
             await browser_session.switch_auth(str(auth_path))
+            await browser_session.ensure_context()
 
             # 切号后默认清理 snapshot，避免旧页面态和新账号 cookies 混用。
             if not keep_snapshot_cache and snapshot_cache is not None:

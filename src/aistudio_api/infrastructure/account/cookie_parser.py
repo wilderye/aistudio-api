@@ -1,15 +1,16 @@
-"""解析浏览器 cookie 字符串，转换为 Playwright storage state 格式。"""
+"""解析浏览器 cookie 字符串，转换为 Playwright cookie / storage state 格式。"""
 
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from typing import Any
 
-# Auth cookies that need httpOnly=False so JS can read them (for SAPISIDHASH)
+# Cookies that need httpOnly=False so JS can read them for SAPISIDHASH.
+# Keep this list narrow: most auth cookies should remain httpOnly.
 _AUTH_COOKIE_NAMES = {
-    "SID", "SSID", "HSID", "APISID", "SAPISID",
+    "SID", "APISID", "SAPISID",
     "__Secure-1PAPISID", "__Secure-3PAPISID",
-    "__Secure-1PSID", "__Secure-3PSID",
 }
 
 _DOMAIN_OVERRIDES: dict[str, list[str]] = {
@@ -51,15 +52,7 @@ _GOOGLE_DOMAINS = [
 ]
 
 
-def parse_cookie_string(raw: str) -> dict[str, Any]:
-    """将 `key=value; key=value` 格式的 cookie 字符串解析为 Playwright storage state。
-
-    Args:
-        raw: 浏览器开发者工具或扩展导出的 cookie 字符串
-
-    Returns:
-        Playwright storage state dict，包含 cookies 和 origins 字段
-    """
+def _parse_cookie_pairs(raw: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for part in raw.split(";"):
         part = part.strip()
@@ -70,41 +63,76 @@ def parse_cookie_string(raw: str) -> dict[str, Any]:
         value = value.strip()
         if name:
             pairs.append((name, value))
+    return pairs
 
+
+def build_google_cookie_list(
+    pairs: Iterable[tuple[str, str]],
+    *,
+    allow_url_targets: bool,
+) -> list[dict[str, Any]]:
+    """Build Playwright-compatible cookies from raw name/value pairs.
+
+    When ``allow_url_targets`` is enabled, host-only cookies are emitted with a
+    ``url`` field instead of an imprecise ``domain`` so Playwright can inject
+    them without tripping cookie prefix validation.
+    """
     now = int(time.time())
     default_expires = now + 86400 * 180  # 180 天后过期
 
-    seen: set[tuple[str, str]] = set()  # (name, domain) 去重
+    seen: set[tuple[str, str, str]] = set()
     cookies: list[dict[str, Any]] = []
 
-    def _add_cookie(name: str, value: str, domain: str) -> None:
-        key = (name, domain)
+    def _add_cookie(name: str, value: str, target: str) -> None:
+        is_host_target = not target.startswith(".")
+
+        if name.startswith("__Host-") and not allow_url_targets:
+            # storage_state 无法精确表达 host-only cookie，交给浏览器补全导出
+            return
+
+        target_kind = "url" if allow_url_targets and is_host_target else "domain"
+        target_value = f"https://{target}/" if target_kind == "url" else target
+        key = (name, target_kind, target_value)
         if key in seen:
             return
         seen.add(key)
-        cookies.append({
+
+        cookie: dict[str, Any] = {
             "name": name,
             "value": value,
-            "domain": domain,
-            "path": "/",
             "secure": True,
             "httpOnly": name not in _AUTH_COOKIE_NAMES,
             "sameSite": "None",
             "expires": default_expires,
-        })
+        }
+        if target_kind == "url":
+            cookie["url"] = target_value
+        else:
+            cookie["domain"] = target
+            cookie["path"] = "/"
+        cookies.append(cookie)
 
     for name, value in pairs:
-        # 有域名覆盖的 cookie
-        if name in _DOMAIN_OVERRIDES:
-            for domain in _DOMAIN_OVERRIDES[name]:
-                _add_cookie(name, value, domain)
-            continue
+        targets = _DOMAIN_OVERRIDES.get(name)
+        if not targets:
+            targets = [".google.com"]
+        for target in targets:
+            _add_cookie(name, value, target)
 
-        # 其余 cookie → .google.com
-        _add_cookie(name, value, ".google.com")
+    return cookies
 
+
+def parse_cookie_string(raw: str) -> dict[str, Any]:
+    """将 `key=value; key=value` 格式的 cookie 字符串解析为 Playwright storage state。
+
+    Args:
+        raw: 浏览器开发者工具或扩展导出的 cookie 字符串
+
+    Returns:
+        Playwright storage state dict，包含 cookies 和 origins 字段
+    """
     return {
-        "cookies": cookies,
+        "cookies": build_google_cookie_list(_parse_cookie_pairs(raw), allow_url_targets=False),
         "origins": [],
     }
 

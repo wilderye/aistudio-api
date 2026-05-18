@@ -51,6 +51,36 @@ def _load_int_env(*names: str, default: int) -> int:
         return default
     return int(value)
 
+
+def _parse_api_keys(raw: str | None) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+
+    keys: list[str] = []
+    for line in raw.splitlines():
+        for part in line.split(","):
+            key = part.strip()
+            if key and key not in keys:
+                keys.append(key)
+    return tuple(keys)
+
+
+def _load_api_keys() -> frozenset[str]:
+    values: list[str] = []
+    for name in ("AISTUDIO_API_KEY", "AISTUDIO_API_KEYS"):
+        for key in _parse_api_keys(os.getenv(name)):
+            if key not in values:
+                values.append(key)
+    return frozenset(values)
+
+
+def _default_chromium_sandbox() -> bool:
+    # On many recent Linux distros (including Ubuntu with AppArmor userns
+    # restrictions), Chromium sandboxing is unavailable unless the host has been
+    # explicitly configured for it. Default to disabled there so the browser can
+    # actually start; keep enabled elsewhere.
+    return os.name != "posix" or os.uname().sysname != "Linux"
+
 _AUTH_SEARCH_ROOTS = [
     Path(__file__).resolve().parents[2] / "data",  # 项目内 data/ 目录
 ]
@@ -127,11 +157,16 @@ class Settings:
     browser_headless: bool = _load_bool_env("AISTUDIO_BROWSER_HEADLESS", "AISTUDIO_CAMOUFOX_HEADLESS", default=True)
     browser_channel: str | None = os.getenv("AISTUDIO_BROWSER_CHANNEL")
     browser_executable_path: str | None = os.getenv("AISTUDIO_BROWSER_EXECUTABLE")
+    browser_chromium_sandbox: bool = _load_bool_env(
+        "AISTUDIO_CHROMIUM_SANDBOX",
+        default=_default_chromium_sandbox(),
+    )
     browser_python: str | None = _load_env("AISTUDIO_BROWSER_PYTHON", "AISTUDIO_CAMOUFOX_PYTHON")
     login_browser_port: int = _load_int_env("AISTUDIO_LOGIN_BROWSER_PORT", "AISTUDIO_LOGIN_CAMOUFOX_PORT", default=9223)
     auth_file: str | None = discover_auth_file()
     tmp_dir: str = os.getenv("AISTUDIO_TMP_DIR", "/tmp")
     proxy_url: str | None = discover_proxy_url()
+    api_keys: frozenset[str] = _load_api_keys()
     timeout_replay: int = int(os.getenv("AISTUDIO_TIMEOUT_REPLAY", "120"))
     timeout_stream: int = int(os.getenv("AISTUDIO_TIMEOUT_STREAM", "120"))
     timeout_capture: int = int(os.getenv("AISTUDIO_TIMEOUT_CAPTURE", "30"))
@@ -163,6 +198,10 @@ class Settings:
     @property
     def login_camoufox_port(self) -> int:
         return self.login_browser_port
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.api_keys)
 
 
 settings = Settings()

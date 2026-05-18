@@ -35,6 +35,13 @@
     </div>
     <div class="sidebar-footer">
       <div class="dot"></div><span>系统在线</span>
+      <button class="logout-btn" @click="logout()" title="登出" x-show="authEnabled">
+        <svg viewBox="0 0 24 24" width="16" height="16">
+          <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
+          <polyline points="16 17 21 12 16 7" />
+          <line x1="21" y1="12" x2="9" y2="12" />
+        </svg>
+      </button>
     </div>
   </nav>
   <div class="main">
@@ -59,6 +66,12 @@
         </template>
       </div>
       <div class="topbar-right" @click.stop>
+        <button class="icon-btn" @click="newChat()" title="新建对话" x-show="view==='chat'">
+          <svg viewBox="0 0 24 24">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
         <button class="icon-btn" :class="{active:configOpen}" @click="configOpen=!configOpen" title="Chat Settings">
           <svg viewBox="0 0 24 24">
             <path
@@ -69,6 +82,15 @@
         <div class="cfg-dropdown" x-show="configOpen" x-cloak @click.stop>
           <div class="cfg-head">聊天设置</div>
           <div class="cfg-body">
+            <div class="cfg-item">
+              <div class="cfg-info">
+                <div class="cfg-name">API Token</div>
+                <div class="cfg-desc">开启鉴权后会自动附带 Bearer Token，仅保存在当前浏览器</div>
+              </div>
+              <div class="cfg-ctrl"><input class="cfg-num" type="password" x-model="auth.token"
+                  placeholder="留空则不发送"></div>
+            </div>
+            <div class="cfg-sep"></div>
             <div class="cfg-item">
               <div class="cfg-info">
                 <div class="cfg-name">推理强度 (Thinking)</div>

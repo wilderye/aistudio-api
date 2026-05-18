@@ -15,19 +15,24 @@ from pathlib import Path
 from typing import Any
 
 from aistudio_api.config import settings
+from aistudio_api.infrastructure.account.account_store import AccountStore
 from aistudio_api.infrastructure.browser.browser_engine import (
     build_browser_context_options,
     describe_browser_backend,
     is_camoufox_engine,
     sync_launch_browser,
+    sync_launch_persistent_context,
     sync_maximize_page_window,
 )
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent
 
 log = logging.getLogger("aistudio.session")
 
-AI_STUDIO_URL = "https://aistudio.google.com/prompts/new_chat"
+AI_STUDIO_URL = "https://aistudio.google.com/prompts/new_chat?model=gemma-4-31b-it"
 AI_STUDIO_URL_FALLBACK = "https://aistudio.google.com/app/prompts/new_chat"
+GOOGLE_LOGIN_BOOTSTRAP_URL = (
+    "https://accounts.google.com/ServiceLogin?continue=https://aistudio.google.com"
+)
 INSTALL_HOOKS_JS = r"""
 mw:((() => {
     // Verify hooks are actually present on XHR prototype, not just a stale flag
@@ -134,7 +139,8 @@ TEMPLATE_CAPTURE_PROMPT = "say 't'"
 class BrowserSession:
     def __init__(self, port: int):
         self.port = port
-        self._auth_file = settings.auth_file
+        self._auth_file = settings.auth_file or self._discover_active_auth_file()
+        self._profile_dir = self._derive_profile_dir(self._auth_file)
         self._hook_page = None
         self._ctx = None
         self._browser = None
@@ -167,28 +173,66 @@ class BrowserSession:
             from aistudio_api.infrastructure.account.cookie_refresher import load_cookies_from_string
 
             pw_cookies = load_cookies_from_string(cookie_string)
-            if not self._ctx:
-                return 0
-            self._ctx.add_cookies(pw_cookies)
+            target_auth_file = auth_file or self._auth_file
+            original_auth_file = self._auth_file
+            original_profile_dir = self._profile_dir
+            had_live_context = (
+                self._ctx is not None
+                and self._hook_page is not None
+                and not self._hook_page.is_closed()
+            )
 
-            # 浏览器访问 aistudio.google.com，让浏览器生成完整 cookies
+            if not target_auth_file:
+                return len(pw_cookies)
+
+            # Seed target auth first so a fresh persistent profile can bootstrap
+            # from the refreshed cookie jar on first launch.
+            self._save_cookies_sync(auth_file=target_auth_file, cookies=pw_cookies)
+
+            switched_target = False
+            target_ctx = self._ctx
+            if (
+                self._ctx is None
+                or not original_auth_file
+                or Path(target_auth_file).resolve() != Path(original_auth_file).resolve()
+            ):
+                self._switch_auth_sync(target_auth_file)
+                switched_target = True
+                target_ctx = self._ensure_browser_sync()
+            elif self._ctx is None:
+                target_ctx = self._ensure_browser_sync()
+
+            if not target_ctx:
+                return len(pw_cookies)
+
+            target_ctx.add_cookies(pw_cookies)
+
+            # 先走 Google 登录页，让浏览器补全 host-only / session cookies
             try:
-                page = self._ctx.new_page()
-                page.goto("https://myaccount.google.com", wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(3000)  # 等待 JS 设置 cookies
-                page.close()
+                page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
+                self._bootstrap_google_session_sync(page)
             except Exception as e:
                 log.warning("[import_cookies] browser visit failed: %s", e)
 
             # 从浏览器导出全部 cookies
-            browser_cookies = self._ctx.cookies()
-            if browser_cookies:
-                self._save_cookies_sync(auth_file=auth_file, cookies=browser_cookies)
-                log.info("[import_cookies] exported %d cookies from browser", len(browser_cookies))
-            else:
-                # fallback: 用 curl_cffi 的结果
-                self._save_cookies_sync(auth_file=auth_file, cookies=pw_cookies)
-            return len(browser_cookies or pw_cookies)
+            try:
+                browser_cookies = self._ctx.cookies()
+                if browser_cookies:
+                    self._save_cookies_sync(auth_file=target_auth_file, cookies=browser_cookies)
+                    log.info("[import_cookies] exported %d cookies from browser", len(browser_cookies))
+                else:
+                    # fallback: 用 curl_cffi 的结果
+                    self._save_cookies_sync(auth_file=target_auth_file, cookies=pw_cookies)
+                return len(browser_cookies or pw_cookies)
+            finally:
+                if switched_target and original_auth_file:
+                    self._switch_auth_sync(original_auth_file)
+                    self._profile_dir = original_profile_dir
+                    if had_live_context:
+                        try:
+                            self._ensure_browser_sync()
+                        except Exception as restore_exc:
+                            log.warning("[import_cookies] failed to restore original browser context: %s", restore_exc)
 
         return await self._run_sync(_sync)
 
@@ -240,6 +284,41 @@ class BrowserSession:
         loop = asyncio.get_running_loop()
         async with self._botguard_lock:
             return await loop.run_in_executor(self._executor, lambda: func(*args))
+
+    @staticmethod
+    def _discover_active_auth_file() -> str | None:
+        try:
+            store = AccountStore()
+            account = store.get_active_account()
+            if account is None:
+                return None
+            path = store.get_auth_path_optional(account.id, require_exists=False)
+            return str(path) if path is not None else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _derive_profile_dir(auth_file: str | None) -> str | None:
+        if not auth_file:
+            fallback_auth_file = BrowserSession._discover_active_auth_file()
+            if not fallback_auth_file:
+                return None
+            auth_file = fallback_auth_file
+        return str(Path(auth_file).resolve().parent / "profile")
+
+    def _bootstrap_google_session_sync(self, page) -> None:
+        """Visit Google surfaces so Chromium can materialize a stable profile."""
+        page.goto(GOOGLE_LOGIN_BOOTSTRAP_URL, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(3000)
+        for url in (AI_STUDIO_URL, AI_STUDIO_URL_FALLBACK):
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(1500)
+                if "accounts.google.com" not in (page.url or ""):
+                    return
+            except Exception:
+                continue
+        raise RuntimeError(f"bootstrap stayed on login flow: url={page.url}")
 
     def _get_captured_info(self) -> tuple[str, dict[str, str]]:
         """Get captured URL and headers from template."""
@@ -439,6 +518,7 @@ class BrowserSession:
 
     def _switch_auth_sync(self, auth_file: str | None) -> None:
         self._auth_file = auth_file
+        self._profile_dir = self._derive_profile_dir(auth_file)
         self._templates.clear()
         self._bootstrap_template = None
         self._close_sync()
@@ -478,38 +558,67 @@ class BrowserSession:
         return self._ctx
 
     def _ensure_browser_chromium_sync(self, _t0: float):
-        """Chromium backend: load auth.json into Playwright context."""
+        """Chromium backend: prefer per-account persistent profile, fallback to auth.json."""
         import time as _t
 
-        self._browser, self._cf, self._playwright = sync_launch_browser()
-        self._ctx = self._browser.new_context(**build_browser_context_options())
+        profile_dir = self._profile_dir
+        should_seed_from_auth = True
+        if profile_dir:
+            profile_path = Path(profile_dir)
+            # If a profile already existed before launch, trust it as the source of
+            # truth and do not re-inject auth.json on failures. Mixing the two was
+            # causing Google to flag the profile's cookie state as inconsistent.
+            should_seed_from_auth = not (profile_path.exists() and any(profile_path.iterdir()))
+            profile_path.mkdir(parents=True, exist_ok=True)
+            self._ctx = sync_launch_persistent_context(
+                profile_dir,
+                **build_browser_context_options(),
+            )
+            self._browser = None
+            self._cf = None
+            self._playwright = None
+        else:
+            self._browser, self._cf, self._playwright = sync_launch_browser()
+            self._ctx = self._browser.new_context(**build_browser_context_options())
 
-        # Try auth.json cache first
-        if self._auth_file and Path(self._auth_file).exists():
+        self._hook_page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
+        sync_maximize_page_window(self._hook_page)
+
+        # First, see whether the persistent profile / current context is already alive.
+        try:
+            self._hook_page.goto("https://aistudio.google.com/", wait_until="domcontentloaded", timeout=15000)
+            if "accounts.google.com" not in (self._hook_page.url or ""):
+                profile_label = "profile" if profile_dir else "auth.json cache"
+                log.info("[chromium-auth] %s hit", profile_label)
+                self._goto_aistudio_sync(self._hook_page)
+                self._install_hooks_sync(self._hook_page)
+                log.debug(f"[timing] page loaded (cached) in {_t.time()-_t0:.1f}s")
+                return self._ctx
+        except Exception as e:
+            log.debug("[chromium-auth] initial profile check failed: %s", e)
+
+        # Only seed a fresh profile from auth.json once. After a profile exists,
+        # auth.json must not be re-injected or it can corrupt the browser state.
+        if should_seed_from_auth and self._auth_file and Path(self._auth_file).exists():
             try:
                 data = json.loads(Path(self._auth_file).read_text())
                 cached = data.get("cookies") or []
                 if cached:
                     self._ctx.add_cookies(cached)
-                    self._hook_page = self._ctx.new_page()
-                    sync_maximize_page_window(self._hook_page)
-                    # Quick check: is the login still valid?
-                    self._hook_page.goto("https://aistudio.google.com/", wait_until="domcontentloaded", timeout=15000)
+                    self._bootstrap_google_session_sync(self._hook_page)
                     if "accounts.google.com" not in (self._hook_page.url or ""):
-                        log.info("[chromium-auth] auth.json cache hit (%d cookies)", len(cached))
+                        log.info("[chromium-auth] auth.json seeded context (%d cookies)", len(cached))
+                        self._save_cookies_sync()
                         self._goto_aistudio_sync(self._hook_page)
                         self._install_hooks_sync(self._hook_page)
                         log.debug(f"[timing] page loaded (cached) in {_t.time()-_t0:.1f}s")
                         return self._ctx
                     log.info("[chromium-auth] auth.json appears expired")
-                    self._close_sync()
-                    self._browser, self._cf, self._playwright = sync_launch_browser()
-                    self._ctx = self._browser.new_context(**build_browser_context_options())
             except Exception as e:
                 log.debug("[chromium-auth] auth.json load failed: %s", e)
+        elif profile_dir:
+            log.info("[chromium-auth] existing profile present; skipped auth.json seeding to avoid cookie pollution")
 
-        self._hook_page = self._ctx.new_page()
-        sync_maximize_page_window(self._hook_page)
         log.debug(f"[timing] browser launched in {_t.time()-_t0:.1f}s")
         self._goto_aistudio_sync(self._hook_page)
         log.debug(f"[timing] page loaded in {_t.time()-_t0:.1f}s")

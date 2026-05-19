@@ -256,8 +256,21 @@ class AccountStore:
 
     def get_auth_path(self, account_id: str) -> Path | None:
         """获取指定账号的 auth.json 路径。"""
+        return self.get_auth_path_optional(account_id, require_exists=True)
+
+    def get_auth_path_optional(self, account_id: str, *, require_exists: bool = False) -> Path | None:
+        """获取指定账号的 auth.json 路径，可选是否要求文件已存在。"""
         registry = self._load_registry()
         if account_id not in registry.accounts:
             return None
         path = self._accounts_dir / account_id / "auth.json"
-        return path if path.exists() else None
+        if require_exists and not path.exists():
+            return None
+        return path
+
+    def get_profile_path(self, account_id: str) -> Path | None:
+        """获取指定账号的 profile 目录路径。"""
+        registry = self._load_registry()
+        if account_id not in registry.accounts:
+            return None
+        return self._accounts_dir / account_id / "profile"

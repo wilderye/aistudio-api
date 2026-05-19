@@ -15,6 +15,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Ar
 .nav-item svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
 .sidebar-footer{padding:16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;font-size:14px;color:var(--muted)}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);flex-shrink:0}
+.logout-btn{margin-left:auto;background:none;border:none;cursor:pointer;padding:6px;border-radius:6px;color:var(--muted);transition:background .15s,color .15s;display:flex;align-items:center;justify-content:center}
+.logout-btn:hover{background:var(--hover);color:var(--text)}
 
 /* Main */
 .main{flex:1;display:flex;flex-direction:column;min-width:0;height:100vh;height:100dvh;overflow:hidden}

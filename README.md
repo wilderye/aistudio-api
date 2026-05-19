@@ -56,6 +56,7 @@ docker run -d \
 ```bash
 # 对话（流式）
 curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer your-secret-token" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gemma-4-31b-it",
@@ -65,6 +66,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 # 图片理解
 curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer your-secret-token" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gemini-3-flash-preview",
@@ -78,7 +80,8 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 
 # 查看模型列表
-curl http://localhost:8080/v1/models
+curl http://localhost:8080/v1/models \
+  -H "Authorization: Bearer your-secret-token"
 ```
 
 ### Gemini 原生接口
@@ -86,6 +89,7 @@ curl http://localhost:8080/v1/models
 ```bash
 # 联网搜索
 curl http://localhost:8080/v1beta/models/gemini-3-flash-preview:generateContent \
+  -H "Authorization: Bearer your-secret-token" \
   -H "Content-Type: application/json" \
   -d '{
     "contents": [{"role": "user", "parts": [{"text": "今天上海天气怎么样？"}]}],
@@ -97,7 +101,7 @@ curl http://localhost:8080/v1beta/models/gemini-3-flash-preview:generateContent 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="unused")
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="your-secret-token")
 
 # 流式对话
 response = client.chat.completions.create(
@@ -144,6 +148,7 @@ python3 main.py client "画一只猫" --image --save cat.png
 | `AISTUDIO_PORT` | `8080` | API 服务端口 |
 | `AISTUDIO_CAMOUFOX_PORT` | `9222` | Camoufox 调试端口 |
 | `AISTUDIO_PROXY` | 空 | 浏览器代理地址 |
+| `AISTUDIO_API_KEY` | 空 | API 鉴权 key，配置后启用 Bearer / X-API-Key 鉴权 |
 | `AISTUDIO_DEFAULT_TEXT_MODEL` | `gemma-4-31b-it` | 默认对话模型 |
 | `AISTUDIO_DEFAULT_IMAGE_MODEL` | `gemini-3.1-flash-image-preview` | 默认图片模型 |
 | `AISTUDIO_CAMOUFOX_HEADLESS` | `1` | 无头模式运行浏览器 |

@@ -5,13 +5,16 @@ function app() {
     stats: {}, rotationMode: 'round_robin', rotCfg: { mode: 'round_robin', cooldown: 60 },
     accounts: [], rotationAccounts: {}, activeId: '', activeAccount: {},
     models: [], model: '',
+    auth: { token: '' },
+    authEnabled: false,
     msgs: [], draft: '', selectedImages: [], busy: false,
     cfg: { thinking: 'off', search: 'off', stream: 'on', temperature: 1.0, topP: 0.95, maxTokens: 32768, safety: 'on' },
     toast: { show: false, msg: '', t: null },
     cookieModal: { open: false, cookies: '', name: '', email: '', importing: false },
     loginInProgress: false,
 
-    init() {
+    async init() {
+      await this.checkAuth();
       this.loadFromCache();
       this.loadModels();
       this.loadStats();
@@ -19,7 +22,42 @@ function app() {
       this.loadRotation();
       this.$watch('cfg', () => this.saveToCache(), { deep: true });
       this.$watch('model', () => this.saveToCache());
+      this.$watch('auth.token', () => this.saveToCache());
       document.addEventListener('click', () => this.openSelect = null);
+    },
+
+    async checkAuth() {
+      try {
+        const res = await fetch('/auth/check');
+        const data = await res.json();
+        this.authEnabled = data.auth_enabled;
+
+        if (this.authEnabled) {
+          const token = localStorage.getItem('asp_api_token');
+          if (!token) {
+            window.location.href = '/static/login.html';
+            return;
+          }
+          // 验证 token 是否有效
+          const verifyRes = await fetch('/health', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (!verifyRes.ok) {
+            localStorage.removeItem('asp_api_token');
+            window.location.href = '/static/login.html';
+            return;
+          }
+          this.auth.token = token;
+        }
+      } catch (e) {
+        console.error('Auth check failed', e);
+      }
+    },
+
+    logout() {
+      localStorage.removeItem('asp_api_token');
+      this.auth.token = '';
+      window.location.href = '/static/login.html';
     },
     loadFromCache() {
       try {
@@ -31,6 +69,8 @@ function app() {
         if (model) this.model = model;
         const models = localStorage.getItem('asp_models');
         if (models) this.models = JSON.parse(models);
+        const token = localStorage.getItem('asp_api_token');
+        if (token) this.auth.token = token;
       } catch (e) { console.error('Cache load error', e); }
     },
     saveToCache() {
@@ -39,6 +79,8 @@ function app() {
         localStorage.setItem('asp_cfg', JSON.stringify(this.cfg));
         localStorage.setItem('asp_model', this.model);
         localStorage.setItem('asp_models', JSON.stringify(this.models));
+        if (this.auth.token.trim()) localStorage.setItem('asp_api_token', this.auth.token.trim());
+        else localStorage.removeItem('asp_api_token');
       } catch (e) { console.error('Cache save error', e); }
     },
     clearCache() {
@@ -50,9 +92,21 @@ function app() {
       location.reload();
     },
     go(v) { this.view = v; this.sidebarOpen = false; if (v === 'dashboard') this.loadStats(); if (v === 'accounts') { this.loadAccounts(); this.loadRotation() } },
+    newChat() { this.msgs = []; this.saveToCache(); this.showToast('已创建新对话') },
     showToast(m) { this.toast.msg = m; this.toast.show = true; if (this.toast.t) clearTimeout(this.toast.t); this.toast.t = setTimeout(() => this.toast.show = false, 3000) },
     toggleSelect(k, e) { e.stopPropagation(); this.openSelect = this.openSelect === k ? null : k },
     selectOpt(k, model, val) { this[model] = val; this.openSelect = null },
+    authHeaders(headers = {}) {
+      const next = { ...headers };
+      const token = this.auth.token.trim();
+      if (token && !next.Authorization && !next.authorization) next.Authorization = `Bearer ${token}`;
+      return next;
+    },
+    async apiFetch(url, options = {}) {
+      const res = await fetch(url, { ...options, headers: this.authHeaders(options.headers || {}) });
+      if (res.status === 401) this.showToast('鉴权失败，请检查 API Token');
+      return res;
+    },
     renderMarkdown(text) {
       if (!text) return '';
       let html = text;
@@ -103,10 +157,10 @@ function app() {
       return html;
     },
 
-    async loadModels() { try { const r = await fetch('/v1/models'); const d = await r.json(); this.models = d.data || []; if (!this.model && this.models.length) this.model = this.models[0].id; this.saveToCache(); } catch (e) { } },
-    async loadStats() { try { const r = await fetch('/stats'); const d = await r.json(); this.stats = d.models || {} } catch (e) { } },
-    async loadAccounts() { try { const [a, b] = await Promise.all([fetch('/accounts').then(r => r.json()), fetch('/accounts/active').then(r => r.json())]); this.accounts = a || []; this.activeId = b?.id || ''; this.activeAccount = b || {} } catch (e) { } },
-    async loadRotation() { try { const r = await fetch('/rotation'); const d = await r.json(); this.rotationMode = d.mode || 'round_robin'; this.rotCfg.mode = d.mode || 'round_robin'; this.rotCfg.cooldown = d.cooldown_seconds || 60; this.rotationAccounts = d.accounts || {} } catch (e) { } },
+    async loadModels() { try { const r = await this.apiFetch('/v1/models'); const d = await r.json(); this.models = d.data || []; if (!this.model && this.models.length) this.model = this.models[0].id; this.saveToCache(); } catch (e) { } },
+    async loadStats() { try { const r = await this.apiFetch('/stats'); const d = await r.json(); this.stats = d.models || {} } catch (e) { } },
+    async loadAccounts() { try { const [a, b] = await Promise.all([this.apiFetch('/accounts').then(r => r.json()), this.apiFetch('/accounts/active').then(r => r.json())]); this.accounts = a || []; this.activeId = b?.id || ''; this.activeAccount = b || {} } catch (e) { } },
+    async loadRotation() { try { const r = await this.apiFetch('/rotation'); const d = await r.json(); this.rotationMode = d.mode || 'round_robin'; this.rotCfg.mode = d.mode || 'round_robin'; this.rotCfg.cooldown = d.cooldown_seconds || 60; this.rotationAccounts = d.accounts || {} } catch (e) { } },
 
     get accountRows() { return this.accounts.map(a => ({ ...a, ...(this.rotationAccounts[a.id] || {}) })) },
     get totalReqs() { return Object.values(this.stats).reduce((s, v) => s + (v.requests || 0), 0) },
@@ -186,7 +240,7 @@ function app() {
         const body = { cookies };
         if (this.cookieModal.name.trim()) body.name = this.cookieModal.name.trim();
         if (this.cookieModal.email.trim()) body.email = this.cookieModal.email.trim();
-        const r = await fetch('/accounts/import-cookies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const r = await this.apiFetch('/accounts/import-cookies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const d = await r.json();
         if (r.ok) {
           this.showToast(`导入成功: ${d.cookie_count} 个 cookie`);
@@ -221,7 +275,7 @@ function app() {
       // 生图模型走 /v1/images/generations
       if (this.model.includes('image')) {
         try {
-          const r = await fetch('/v1/images/generations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: this.model, prompt: t, size: '1024x1024' }) });
+          const r = await this.apiFetch('/v1/images/generations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: this.model, prompt: t, size: '1024x1024' }) });
           if (!r.ok) { let e = r.statusText; try { const d = await r.json(); if (d.detail) e = JSON.stringify(d.detail) } catch (x) { }; this.msgs.push({ role: 'assistant', content: '', error: `Error ${r.status}: ${e}` }) }
           else {
             const d = await r.json(); const imgs = d.data || []; let content = ''; imgs.forEach(img => { if (img.b64_json) content += `![image](data:image/png;base64,${img.b64_json})\n`; else if (img.url) content += `![image](${img.url})\n`; if (img.revised_prompt) content += img.revised_prompt + '\n' });
@@ -253,7 +307,7 @@ function app() {
       if (this.cfg.safety === 'off') body.safety_off = true;
 
       try {
-        const r = await fetch('/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const r = await this.apiFetch('/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!r.ok) { let e = r.statusText; try { const d = await r.json(); if (d.detail) e = JSON.stringify(d.detail) } catch (x) { }; this.msgs.push({ role: 'assistant', content: '', error: `Error ${r.status}: ${e}` }) }
         else if (this.cfg.stream === 'on') {
           const reader = r.body.getReader(); const dec = new TextDecoder(); this.msgs.push({ role: 'assistant', content: '', thinking: '', showThinking: false }); const idx = this.msgs.length - 1; let buf = '';

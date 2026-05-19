@@ -6,17 +6,19 @@ import argparse
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
 
 from .routes_anthropic import router as anthropic_router
+from .dependencies import require_api_key
 from .routes_accounts import router as accounts_router
 from .routes_gemini import router as gemini_router
 from .routes_openai import router as openai_router
-from .routes_system import router as system_router
+from .routes_system import protected_router as system_protected_router
+from .routes_system import public_router as system_public_router
 from .state import runtime_state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s", datefmt="%H:%M:%S")
@@ -90,11 +92,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Studio API", lifespan=lifespan)
-app.include_router(system_router)
-app.include_router(gemini_router)
-app.include_router(anthropic_router)
-app.include_router(openai_router)
-app.include_router(accounts_router)
+app.include_router(system_public_router)
+app.include_router(system_protected_router, dependencies=[Depends(require_api_key)])
+app.include_router(gemini_router, dependencies=[Depends(require_api_key)])
+app.include_router(openai_router, dependencies=[Depends(require_api_key)])
+app.include_router(anthropic_router， dependencies=[Depends(require_api_key)])
+app.include_router(accounts_router, dependencies=[Depends(require_api_key)])
 
 # 挂载静态文件
 import os
@@ -106,6 +109,18 @@ if os.path.isdir(static_dir):
 @app.get("/")
 async def root():
     return RedirectResponse(url="/static/index.html")
+
+
+@app.get("/login")
+async def login_page():
+    return RedirectResponse(url="/static/login.html")
+
+
+@app.get("/auth/check")
+async def auth_check():
+    """检查认证状态，用于前端判断是否需要登录。"""
+    from aistudio_api.config import settings
+    return {"auth_enabled": settings.auth_enabled}
 
 
 def main():

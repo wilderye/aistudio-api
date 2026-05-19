@@ -8,15 +8,16 @@ from pydantic import BaseModel
 from aistudio_api.application.api_service import health_response, stats_response
 from aistudio_api.api.dependencies import get_runtime_state
 
-router = APIRouter()
+public_router = APIRouter()
+protected_router = APIRouter()
 
 
-@router.get("/health")
+@public_router.get("/health")
 async def health():
     return health_response()
 
 
-@router.get("/stats")
+@protected_router.get("/stats")
 async def stats():
     return stats_response()
 
@@ -28,7 +29,7 @@ class RotationModeRequest(BaseModel):
     cooldown_seconds: int | None = None
 
 
-@router.get("/rotation")
+@protected_router.get("/rotation")
 async def get_rotation_status(runtime_state=Depends(get_runtime_state)):
     """获取轮询状态。"""
     rotator = runtime_state.rotator
@@ -43,7 +44,7 @@ async def get_rotation_status(runtime_state=Depends(get_runtime_state)):
     }
 
 
-@router.post("/rotation/mode")
+@protected_router.post("/rotation/mode")
 async def set_rotation_mode(
     req: RotationModeRequest,
     runtime_state=Depends(get_runtime_state),
@@ -67,7 +68,7 @@ async def set_rotation_mode(
         raise HTTPException(400, detail=f"无效的轮询模式: {req.mode}，可选: round_robin, lru, least_rl")
 
 
-@router.get("/rotation/accounts")
+@protected_router.get("/rotation/accounts")
 async def get_rotation_accounts(runtime_state=Depends(get_runtime_state)):
     """获取所有账号的轮询统计。"""
     rotator = runtime_state.rotator
@@ -77,7 +78,7 @@ async def get_rotation_accounts(runtime_state=Depends(get_runtime_state)):
     return rotator.get_all_stats()
 
 
-@router.post("/rotation/next")
+@protected_router.post("/rotation/next")
 async def force_next_account(runtime_state=Depends(get_runtime_state)):
     """强制切换到下一个可用账号。"""
     rotator = runtime_state.rotator
@@ -116,4 +117,3 @@ async def force_next_account(runtime_state=Depends(get_runtime_state)):
             "email": result.email,
         },
     }
-

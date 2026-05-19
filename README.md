@@ -4,6 +4,26 @@ Google AIStudio Playgroud 反代，支持 Google 会员（Pro/Ultra），支持 
 
 [English](./README_EN.md)
 
+## 目录
+
+- [功能](#功能)
+- [快速开始](#快速开始)
+  - [直接启动](#直接启动)
+  - [Docker 部署](#docker-部署)
+  - [登录](#登录)
+- [使用示例](#使用示例)
+  - [OpenAI 兼容接口](#openai-兼容接口)
+  - [Gemini 原生接口](#gemini-原生接口)
+  - [Python（OpenAI SDK）](#pythonopenai-sdk)
+  - [命令行客户端](#命令行客户端)
+- [支持的模型](#支持的模型)
+- [配置](#配置)
+- [架构](#架构)
+- [BotGuard 原理](#botguard-原理)
+- [TODO](#todo)
+- [致谢](#致谢)
+- [License](#license)
+
 ## 功能
 
 - **OpenAI/Anthropic 兼容** — 支持 `/v1/chat/completions`、`/v1/images/generations`、`/v1/messages`

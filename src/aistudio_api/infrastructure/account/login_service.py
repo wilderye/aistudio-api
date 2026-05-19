@@ -5,6 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import sys
+import termios
+import time
+from urllib.parse import urlencode
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -37,6 +41,22 @@ class LoginSession:
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
+@dataclass
+class TerminalLoginStep:
+    """终端辅助登录步骤。"""
+
+    kind: str
+    prompt: str
+    sensitive: bool = False
+    options: list[str] = field(default_factory=list)
+    phase: str | None = None
+
+    def signature(self) -> str:
+        phase = self.phase or ""
+        options = "|".join(self.options)
+        return f"{phase}|{self.kind}|{options}"
+
+
 class LoginService:
     """Google 账号登录服务。"""
 
@@ -44,6 +64,7 @@ class LoginService:
         self._port = port
         self._sessions: dict[str, LoginSession] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._terminal_lock = asyncio.Lock()
 
     def _generate_session_id(self) -> str:
         return f"login_{secrets.token_hex(8)}"
@@ -52,6 +73,9 @@ class LoginService:
         self,
         account_store: Any,  # AccountStore
         name: str | None = None,
+        *,
+        headless: bool = False,
+        ui_locale: str | None = None,
     ) -> str:
         """启动登录流程，返回 session_id。"""
         session_id = self._generate_session_id()
@@ -59,7 +83,13 @@ class LoginService:
         self._sessions[session_id] = session
         # 启动后台任务
         task = asyncio.create_task(
-            self._login_worker(session_id, account_store, name)
+            self._login_worker(
+                session_id,
+                account_store,
+                name,
+                headless=headless,
+                ui_locale=ui_locale,
+            )
         )
         self._tasks[session_id] = task
         return session_id
@@ -68,20 +98,691 @@ class LoginService:
         """获取登录状态。"""
         return self._sessions.get(session_id)
 
+    def _terminal_available(self) -> bool:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+
+    async def _read_terminal_input(self, prompt: str, *, sensitive: bool = False) -> str:
+        loop = asyncio.get_running_loop()
+        fd = sys.stdin.fileno()
+        future = loop.create_future()
+        old_attrs = None
+
+        def _on_input_ready() -> None:
+            try:
+                line = sys.stdin.readline()
+            except Exception as exc:
+                if not future.done():
+                    future.set_exception(exc)
+                return
+            if not future.done():
+                future.set_result(line.rstrip("\r\n"))
+
+        try:
+            sys.stdout.write(prompt)
+            sys.stdout.flush()
+            if sensitive and sys.stdin.isatty():
+                old_attrs = termios.tcgetattr(fd)
+                new_attrs = termios.tcgetattr(fd)
+                new_attrs[3] &= ~termios.ECHO
+                termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
+            loop.add_reader(fd, _on_input_ready)
+            return await future
+        except NotImplementedError:
+            return await asyncio.to_thread(input, "")
+        finally:
+            try:
+                loop.remove_reader(fd)
+            except Exception:
+                pass
+            if old_attrs is not None:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+
+    async def _find_visible_locator(self, page, selectors: list[str]):
+        if not selectors:
+            return None
+        combined_selector = ", ".join(selectors)
+        locator = page.locator(combined_selector).first
+        try:
+            await locator.wait_for(state="visible", timeout=3000)
+            return locator
+        except Exception:
+            return None
+
+    def _supports_switch_login_method(self, step: TerminalLoginStep) -> bool:
+        return step.phase in {"totp", "ootp", "dp"} or step.kind == "phone"
+
+    def _build_input_prompt(self, step: TerminalLoginStep) -> str:
+        if self._supports_switch_login_method(step):
+            return f"{step.prompt}（回车切换登录方式）"
+        return step.prompt
+
+    def _classify_google_login_phase(self, url: str) -> str | None:
+        if not url or "accounts.google.com" not in url:
+            return None
+        if "/v3/signin/identifier" in url:
+            return "identifier"
+        if "/v3/signin/challenge/pwd" in url:
+            return "pwd"
+        if "/v3/signin/challenge/dp" in url:
+            return "dp"
+        if "/v3/signin/challenge/selection" in url:
+            return "selection"
+        if "/v3/signin/challenge/totp" in url:
+            return "totp"
+        if "/v3/signin/challenge/ootp" in url:
+            return "ootp"
+        return None
+
+    def _step_from_phase(self, phase: str) -> TerminalLoginStep | None:
+        mapping = {
+            "identifier": TerminalLoginStep(kind="email", prompt="请输入邮箱", phase=phase),
+            "pwd": TerminalLoginStep(kind="password", prompt="请输入密码", sensitive=True, phase=phase),
+            "dp": TerminalLoginStep(kind="manual", prompt="请在手机上点击确认", phase=phase),
+            "selection": TerminalLoginStep(kind="selection", prompt="请选择登录方式", phase=phase),
+            "totp": TerminalLoginStep(kind="otp", prompt="请输入验证器验证码", phase=phase),
+            "ootp": TerminalLoginStep(kind="otp", prompt="请输入安全码", phase=phase),
+        }
+        return mapping.get(phase)
+
+    async def _detect_terminal_step(self, page) -> TerminalLoginStep | None:
+        phase = self._classify_google_login_phase(page.url or "")
+        payload = await page.evaluate(
+            """
+            (phase) => {
+                const genericTitles = new Set([
+                    "sign in",
+                    "signin",
+                    "google",
+                    "welcome",
+                    "使用 google 账号登录",
+                    "登录",
+                ]);
+                const visible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.visibility !== "hidden"
+                        && style.display !== "none"
+                        && rect.width > 0
+                        && rect.height > 0;
+                };
+                const text = (el) => (el?.innerText || el?.textContent || "")
+                    .replace(/\\s+/g, " ")
+                    .trim();
+                const withTitle = (base, title) => {
+                    const normalized = (title || "").trim().toLowerCase();
+                    if (!normalized || genericTitles.has(normalized)) {
+                        return base;
+                    }
+                    return `${base}（${title.trim()}）`;
+                };
+                const buildSelectionOptions = () => {
+                    const ignored = new Set(["back", "next", "try another way", "帮助", "隐私权", "条款"]);
+                    return Array.from(document.querySelectorAll("button, div[role='button']"))
+                        .filter(visible)
+                        .map((el) => text(el))
+                        .map((value) => value.replace(/\\s+/g, " ").trim())
+                        .filter(Boolean)
+                        .filter((value) => value.length <= 80)
+                        .filter((value) => !ignored.has(value.toLowerCase()))
+                        .filter((item, index, arr) => arr.indexOf(item) === index)
+                        .slice(0, 8);
+                };
+                const bodyText = text(document.body).toLowerCase();
+                const title = text(document.querySelector("h1, [role='heading']")) || document.title || "";
+
+                if (phase === "selection") {
+                    return {
+                        kind: "selection",
+                        prompt: withTitle("请选择登录方式", title),
+                        options: buildSelectionOptions(),
+                    };
+                }
+
+                const chooser = Array.from(document.querySelectorAll("[data-identifier]"))
+                    .filter(visible)
+                    .map((el) => {
+                        const email = el.getAttribute("data-identifier") || "";
+                        const label = text(el) || email;
+                        return label ? `${label}${email && !label.includes(email) ? ` (${email})` : ""}` : email;
+                    })
+                    .filter(Boolean)
+                    .filter((item, index, arr) => arr.indexOf(item) === index)
+                    .slice(0, 8);
+                if (chooser.length > 0) {
+                    return {
+                        kind: "choose_account",
+                        prompt: withTitle("请选择账号", title),
+                        options: chooser,
+                    };
+                }
+
+                const password = document.querySelector("input[type='password'], input[name='Passwd']");
+                if (visible(password)) {
+                    return {
+                        kind: "password",
+                        prompt: withTitle("请输入密码", title),
+                        sensitive: true,
+                    };
+                }
+
+                const otp = document.querySelector(
+                    "input[autocomplete='one-time-code'], input[name='totpPin'], input[inputmode='numeric'], input[type='tel']"
+                );
+                if (visible(otp)) {
+                    return {
+                        kind: bodyText.includes("phone") ? "phone" : "otp",
+                        prompt: withTitle(bodyText.includes("phone") ? "请输入短信验证码" : "请输入验证码", title),
+                    };
+                }
+
+                const email = document.querySelector("input[type='email'], input[name='identifier']");
+                if (visible(email)) {
+                    if (bodyText.includes("recovery email")) {
+                        return {
+                            kind: "recovery_email",
+                            prompt: withTitle("请输入恢复邮箱", title),
+                        };
+                    }
+                    return {
+                        kind: "email",
+                        prompt: withTitle("请输入邮箱", title),
+                    };
+                }
+
+                if (
+                    bodyText.includes("tap yes") ||
+                    bodyText.includes("check your phone") ||
+                    bodyText.includes("security key") ||
+                    bodyText.includes("passkey") ||
+                    bodyText.includes("qr code")
+                ) {
+                    return {
+                        kind: "manual",
+                        prompt: withTitle("需要在设备上手动确认", title),
+                    };
+                }
+
+                return null;
+            }
+            """,
+            phase,
+        )
+        dom_step = None
+        if payload:
+            dom_step = TerminalLoginStep(
+                kind=payload["kind"],
+                prompt=payload.get("prompt") or "请输入",
+                sensitive=bool(payload.get("sensitive")),
+                options=list(payload.get("options") or []),
+                phase=phase,
+            )
+
+        phase_step = self._step_from_phase(phase) if phase else None
+        if phase_step is not None:
+            if phase_step.kind == "selection":
+                if dom_step is not None and dom_step.options:
+                    dom_step.prompt = phase_step.prompt
+                    dom_step.phase = phase
+                    return dom_step
+                return TerminalLoginStep(
+                    kind="manual",
+                    prompt="请选择登录方式（请在浏览器里点击）",
+                    phase=phase,
+                )
+            if dom_step is not None and dom_step.kind == phase_step.kind:
+                dom_step.phase = phase
+                if phase_step.prompt:
+                    dom_step.prompt = phase_step.prompt
+                return dom_step
+            return phase_step
+        return dom_step
+
+    async def _submit_terminal_value(self, page, step: TerminalLoginStep, value: str) -> bool:
+        input_selectors = {
+            "email": ["input[type='email']", "input[name='identifier']"],
+            "password": ["input[type='password']", "input[name='Passwd']"],
+            "recovery_email": ["input[type='email']"],
+            "otp": [
+                "input[autocomplete='one-time-code']",
+                "input[name='totpPin']",
+                "input[inputmode='numeric']",
+                "input[type='tel']",
+            ],
+            "phone": ["input[type='tel']", "input[inputmode='numeric']"],
+        }
+        submit_selectors = {
+            "email": [
+                "#identifierNext button",
+                "#identifierNext",
+                "button:has-text('Next')",
+                "button:has-text('下一步')",
+                "div[role='button']:has-text('Next')",
+                "div[role='button']:has-text('下一步')",
+            ],
+            "password": [
+                "#passwordNext button",
+                "#passwordNext",
+                "button:has-text('Next')",
+                "button:has-text('下一步')",
+                "div[role='button']:has-text('Next')",
+                "div[role='button']:has-text('下一步')",
+            ],
+            "recovery_email": [
+                "button:has-text('Next')",
+                "button:has-text('继续')",
+                "button:has-text('下一步')",
+                "div[role='button']:has-text('Next')",
+                "div[role='button']:has-text('继续')",
+                "div[role='button']:has-text('下一步')",
+            ],
+            "otp": [
+                "button:has-text('Next')",
+                "button:has-text('Verify')",
+                "button:has-text('继续')",
+                "button:has-text('下一步')",
+                "div[role='button']:has-text('Next')",
+                "div[role='button']:has-text('Verify')",
+                "div[role='button']:has-text('继续')",
+                "div[role='button']:has-text('下一步')",
+            ],
+            "phone": [
+                "button:has-text('Next')",
+                "button:has-text('继续')",
+                "button:has-text('下一步')",
+                "div[role='button']:has-text('Next')",
+                "div[role='button']:has-text('继续')",
+                "div[role='button']:has-text('下一步')",
+            ],
+        }
+
+        locator = await self._find_visible_locator(page, input_selectors.get(step.kind, []))
+        if locator is None:
+            return False
+        await locator.click()
+        await locator.fill(value)
+        submit = await self._find_visible_locator(page, submit_selectors.get(step.kind, []))
+        if submit is not None:
+            await submit.click()
+        else:
+            await locator.press("Enter")
+        return True
+
+    async def _choose_account_from_terminal(self, page, raw_value: str) -> bool:
+        value = raw_value.strip()
+        if not value:
+            return False
+        if not value.isdigit():
+            return False
+
+        target_index = int(value) - 1
+        items = page.locator("[data-identifier]")
+        visible_items = []
+        for idx in range(await items.count()):
+            candidate = items.nth(idx)
+            try:
+                if await candidate.is_visible():
+                    visible_items.append(candidate)
+            except Exception:
+                continue
+
+        if target_index < 0 or target_index >= len(visible_items):
+            return False
+        await visible_items[target_index].click()
+        return True
+
+    async def _choose_selection_from_terminal(self, page, raw_value: str) -> bool:
+        value = raw_value.strip()
+        if not value or not value.isdigit():
+            return False
+
+        target_index = int(value) - 1
+        return bool(
+            await page.evaluate(
+                """
+                (targetIndex) => {
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.visibility !== "hidden"
+                            && style.display !== "none"
+                            && rect.width > 0
+                            && rect.height > 0;
+                    };
+                    const text = (el) => (el?.innerText || el?.textContent || "")
+                        .replace(/\\s+/g, " ")
+                        .trim();
+                    const ignored = new Set(["back", "next", "try another way", "帮助", "隐私权", "条款"]);
+                    const candidates = Array.from(document.querySelectorAll("button, div[role='button']"))
+                        .filter(visible)
+                        .filter((el) => {
+                            const value = text(el);
+                            return value && value.length <= 80 && !ignored.has(value.toLowerCase());
+                        })
+                        .filter((el, index, arr) => {
+                            const value = text(el);
+                            return arr.findIndex((item) => text(item) === value) === index;
+                        });
+                    if (targetIndex < 0 || targetIndex >= candidates.length) {
+                        return false;
+                    }
+                    candidates[targetIndex].click();
+                    return true;
+                }
+                """,
+                target_index,
+            )
+        )
+
+    async def _switch_login_method(self, page) -> bool:
+        selectors = [
+            "button:has-text('Try another way')",
+            "button:has-text('try another way')",
+            "button:has-text('Try another option')",
+            "button:has-text('试试其他方式')",
+            "button:has-text('尝试其他方式')",
+            "button:has-text('其他方式')",
+            "div[role='button']:has-text('Try another way')",
+            "div[role='button']:has-text('try another way')",
+            "div[role='button']:has-text('Try another option')",
+            "div[role='button']:has-text('试试其他方式')",
+            "div[role='button']:has-text('尝试其他方式')",
+            "div[role='button']:has-text('其他方式')",
+            "a:has-text('Try another way')",
+            "a:has-text('try another way')",
+            "a:has-text('试试其他方式')",
+            "a:has-text('尝试其他方式')",
+            "a:has-text('其他方式')",
+        ]
+        locator = await self._find_visible_locator(page, selectors)
+        if locator is not None:
+            await locator.click()
+            return True
+
+        return bool(
+            await page.evaluate(
+                """
+                () => {
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.visibility !== "hidden"
+                            && style.display !== "none"
+                            && rect.width > 0
+                            && rect.height > 0;
+                    };
+                    const text = (el) => (el?.innerText || el?.textContent || "")
+                        .replace(/\\s+/g, " ")
+                        .trim()
+                        .toLowerCase();
+                    const targets = [
+                        "try another way",
+                        "try another option",
+                        "试试其他方式",
+                        "尝试其他方式",
+                        "其他方式",
+                    ];
+                    const nodes = Array.from(document.querySelectorAll("button, div[role='button'], a"));
+                    const hit = nodes.find((el) => visible(el) && targets.some((target) => text(el).includes(target)));
+                    if (!hit) {
+                        return false;
+                    }
+                    hit.click();
+                    return true;
+                }
+                """
+            )
+        )
+
+    async def _wait_for_step_transition(
+        self,
+        page,
+        previous_signature: str,
+        *,
+        timeout: float = 6.0,
+    ) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+            current_step = await self._detect_terminal_step(page)
+            if current_step is None:
+                return True
+            current_signature = current_step.signature()
+            if current_signature != previous_signature:
+                return True
+        return False
+
+    async def _wait_for_manual_confirmation_or_input(
+        self,
+        session_id: str,
+        page,
+        signature: str,
+        login_done: asyncio.Event,
+        prompt: str,
+    ) -> str:
+        input_task = asyncio.create_task(self._read_terminal_input(prompt))
+        transition_task = asyncio.create_task(
+            self._wait_for_step_transition(page, signature, timeout=300.0)
+        )
+        login_done_task = asyncio.create_task(login_done.wait())
+        done, pending = await asyncio.wait(
+            {input_task, transition_task, login_done_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        if login_done_task in done and login_done.is_set():
+            print(f"\n[{session_id}] 已收到确认，等待登录完成。")
+            return "completed"
+
+        if transition_task in done:
+            try:
+                progressed = transition_task.result()
+            except Exception:
+                progressed = False
+            if progressed:
+                print(f"[{session_id}] 已收到确认，正在继续。")
+                return "progressed"
+            return "stayed"
+
+        raw_value = input_task.result()
+        if raw_value.strip():
+            print(f"[{session_id}] 这一步不用输入内容；直接回车可切换登录方式。")
+            return "ignored"
+        return "switch"
+
+    def _build_login_url(self, *, ui_locale: str | None = None) -> str:
+        query = {
+            "continue": "https://aistudio.google.com",
+        }
+        if ui_locale:
+            query["hl"] = ui_locale
+        return f"https://accounts.google.com/ServiceLogin?{urlencode(query)}"
+
+    async def _terminal_login_loop(
+        self,
+        session_id: str,
+        page,
+        login_done: asyncio.Event,
+        *,
+        headless: bool,
+    ) -> None:
+        if not self._terminal_available():
+            logger.info("[%s] 当前不是交互终端，跳过终端辅助登录", session_id)
+            return
+
+        async with self._terminal_lock:
+            print(f"\n[{session_id}] 终端登录助手已启用。")
+            announced_signature: str | None = None
+            last_prompt_signature: str | None = None
+            last_prompt_at = 0.0
+
+            while not login_done.is_set():
+                try:
+                    step = await self._detect_terminal_step(page)
+                except Exception as exc:
+                    logger.debug("[%s] 检测登录步骤失败: %s", session_id, exc)
+                    await asyncio.sleep(1)
+                    continue
+
+                if step is None:
+                    await asyncio.sleep(1)
+                    continue
+
+                signature = step.signature()
+                if step.kind == "manual":
+                    if self._supports_switch_login_method(step):
+                        action = await self._wait_for_manual_confirmation_or_input(
+                            session_id,
+                            page,
+                            signature,
+                            login_done,
+                            f"[{session_id}] {self._build_input_prompt(step)}: ",
+                        )
+                        if action == "completed":
+                            return
+                        if action == "progressed":
+                            announced_signature = None
+                            last_prompt_signature = None
+                            last_prompt_at = 0.0
+                            continue
+                        last_prompt_signature = signature
+                        last_prompt_at = time.monotonic()
+                        if action == "ignored":
+                            await asyncio.sleep(1)
+                            continue
+                        if action == "switch":
+                            switched = await self._switch_login_method(page)
+                            if switched:
+                                announced_signature = None
+                                last_prompt_signature = None
+                                progressed = await self._wait_for_step_transition(page, signature)
+                                if not progressed:
+                                    last_prompt_signature = signature
+                                    last_prompt_at = time.monotonic()
+                                    print(f"[{session_id}] 还在当前登录方式，请按页面提示确认后再继续。")
+                                continue
+                            print(f"[{session_id}] 没找到“切换登录方式”入口，请按页面提示继续。")
+                            await asyncio.sleep(1)
+                            continue
+                        print(f"[{session_id}] 页面还停留在当前步骤，请按页面提示确认后再继续。")
+                        await asyncio.sleep(1)
+                        continue
+                    if signature != announced_signature:
+                        print(f"[{session_id}] {step.prompt}。")
+                        announced_signature = signature
+                    await asyncio.sleep(3)
+                    continue
+
+                if step.kind in {"choose_account", "selection"}:
+                    if signature != announced_signature:
+                        label = "检测到账号选择页" if step.kind == "choose_account" else "检测到登录方式选择页"
+                        print(f"[{session_id}] {label}：")
+                        for idx, option in enumerate(step.options, start=1):
+                            print(f"  {idx}. {option}")
+                        announced_signature = signature
+                    if signature == last_prompt_signature and time.monotonic() - last_prompt_at < 2.5:
+                        await asyncio.sleep(0.8)
+                        continue
+                    prompt = "输入编号，留空表示改为手动操作"
+                    raw_value = await self._read_terminal_input(f"[{session_id}] {prompt}: ")
+                    last_prompt_signature = signature
+                    last_prompt_at = time.monotonic()
+                    if login_done.is_set():
+                        return
+                    if not raw_value.strip():
+                        await asyncio.sleep(1)
+                        continue
+                    choose_ok = (
+                        await self._choose_account_from_terminal(page, raw_value)
+                        if step.kind == "choose_account"
+                        else await self._choose_selection_from_terminal(page, raw_value)
+                    )
+                    if not choose_ok:
+                        print(f"[{session_id}] 编号无效，重新输入。")
+                        continue
+                    announced_signature = None
+                    last_prompt_signature = None
+                    progressed = await self._wait_for_step_transition(page, signature)
+                    if not progressed:
+                        print(f"[{session_id}] 页面还停留在当前步骤，请按页面提示确认后再继续。")
+                        last_prompt_signature = signature
+                        last_prompt_at = time.monotonic()
+                    continue
+
+                if signature == last_prompt_signature and time.monotonic() - last_prompt_at < 2.5:
+                    await asyncio.sleep(0.8)
+                    continue
+                raw_value = await self._read_terminal_input(
+                    f"[{session_id}] {self._build_input_prompt(step)}: ",
+                    sensitive=step.sensitive,
+                )
+                last_prompt_signature = signature
+                last_prompt_at = time.monotonic()
+                if login_done.is_set():
+                    return
+                if not raw_value.strip():
+                    if self._supports_switch_login_method(step):
+                        switched = await self._switch_login_method(page)
+                        if switched:
+                            announced_signature = None
+                            last_prompt_signature = None
+                            progressed = await self._wait_for_step_transition(page, signature)
+                            if not progressed:
+                                last_prompt_signature = signature
+                                last_prompt_at = time.monotonic()
+                                print(f"[{session_id}] 还在当前登录方式，请按页面提示确认后再继续。")
+                            continue
+                        print(f"[{session_id}] 没找到“切换登录方式”入口，请按页面提示继续。")
+                        await asyncio.sleep(1)
+                        continue
+                    print(f"[{session_id}] 输入为空，这一步先跳过。")
+                    await asyncio.sleep(1)
+                    continue
+
+                applied = await self._submit_terminal_value(page, step, raw_value.strip())
+                if not applied:
+                    print(f"[{session_id}] 没找到可填写的输入框，这一步请先在浏览器里手动处理。")
+                    await asyncio.sleep(2)
+                    continue
+
+                announced_signature = None
+                last_prompt_signature = None
+                progressed = await self._wait_for_step_transition(page, signature)
+                if not progressed:
+                    last_prompt_signature = signature
+                    last_prompt_at = time.monotonic()
+                    print(f"[{session_id}] 页面还停留在当前步骤，请按页面提示确认后再继续。")
+
     async def _login_worker(
         self,
         session_id: str,
         account_store: Any,
         name: str | None,
+        *,
+        headless: bool,
+        ui_locale: str | None,
     ) -> None:
         """登录工作协程。"""
         session = self._sessions[session_id]
         manager = CamoufoxManager(
             port=self._port,
-            headless=False,  # 有头模式，用户需要看到浏览器
+            headless=headless,
         )
         playwright = None
         browser = None
+        terminal_task: asyncio.Task | None = None
         try:
             # 启动浏览器
             logger.info("启动登录浏览器，端口 %d", self._port)
@@ -92,9 +793,9 @@ class LoginService:
             from playwright.async_api import async_playwright
             playwright = await async_playwright().start()
             browser = await manager.launch_browser(playwright)
-            context = await browser.new_context(**build_browser_context_options(headless=False))
+            context = await browser.new_context(**build_browser_context_options(headless=headless))
             page = await context.new_page()
-            await async_maximize_page_window(page, headless=False)
+            await async_maximize_page_window(page, headless=headless)
 
             # 设置登录完成检测
             login_done = asyncio.Event()
@@ -126,8 +827,12 @@ class LoginService:
             # 导航到 Google 登录页面
             logger.info("打开 Google 登录页面")
             await page.goto(
-                "https://accounts.google.com/ServiceLogin?continue=https://aistudio.google.com",
+                self._build_login_url(ui_locale=ui_locale),
                 wait_until="networkidle",
+            )
+
+            terminal_task = asyncio.create_task(
+                self._terminal_login_loop(session_id, page, login_done, headless=headless)
             )
 
             # 等待用户完成登录（最多 5 分钟）
@@ -199,6 +904,14 @@ class LoginService:
             session.error = str(e)
             logger.exception("登录失败")
         finally:
+            if terminal_task is not None:
+                terminal_task.cancel()
+                try:
+                    await terminal_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
             # 清理浏览器和 Playwright
             try:
                 if browser:

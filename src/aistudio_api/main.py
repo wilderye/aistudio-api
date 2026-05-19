@@ -31,6 +31,13 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot_parser = subparsers.add_parser("snapshot", help="抓取 snapshot")
     snapshot_parser.add_argument("prompt", nargs="?", default="你好，测试snapshot提取", help="触发用 prompt")
 
+    login_parser = subparsers.add_parser("login", help="通过终端完成 Google 账号登录")
+    login_parser.add_argument("--name", help="保存账号时使用的名称")
+    login_parser.add_argument("--headed", action="store_true", help="显示浏览器窗口")
+    login_parser.add_argument("--hl", default="en-US", help="Google 登录页语言，默认 en-US")
+    login_parser.add_argument("--browser-port", type=int, default=settings.login_browser_port, help="登录浏览器调试端口")
+    login_parser.add_argument("--camoufox-port", type=int, dest="browser_port", help=argparse.SUPPRESS)
+
     return parser
 
 
@@ -66,4 +73,43 @@ def main():
             print(f"cookies: {len(cookies or {})} 个")
 
         asyncio.run(_run_snapshot())
+        return
+
+    if args.command == "login":
+        from aistudio_api.application.account_service import AccountService
+        from aistudio_api.infrastructure.account.account_store import AccountStore
+        from aistudio_api.infrastructure.account.login_service import LoginService, LoginStatus
+
+        async def _run_login():
+            store = AccountStore()
+            service = AccountService(
+                account_store=store,
+                login_service=LoginService(port=args.browser_port),
+            )
+            session_id = await service.start_login(
+                args.name,
+                headless=not args.headed,
+                ui_locale=args.hl,
+            )
+            print(f"session_id: {session_id}")
+            print(f"mode: {'headed' if args.headed else 'headless'}")
+
+            last_status = None
+            while True:
+                session = service.get_login_status(session_id)
+                if session is None:
+                    raise RuntimeError("登录会话丢失")
+                if session.status != last_status:
+                    print(f"status: {session.status.value}")
+                    last_status = session.status
+                if session.status == LoginStatus.COMPLETED:
+                    print(f"account_id: {session.account_id}")
+                    if session.email:
+                        print(f"email: {session.email}")
+                    return
+                if session.status == LoginStatus.FAILED:
+                    raise RuntimeError(session.error or "登录失败")
+                await asyncio.sleep(1)
+
+        asyncio.run(_run_login())
         return

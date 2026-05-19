@@ -6,7 +6,7 @@ Google AIStudio Playgroud 反代，支持 Google 会员（Pro/Ultra），支持 
 
 ## 功能
 
-- **OpenAI 兼容** — 支持 `/v1/chat/completions`、`/v1/models`、`/v1/images/generations`
+- **OpenAI/Anthropic 兼容** — 支持 `/v1/chat/completions`、`/v1/images/generations`、`/v1/messages`
 - **Gemini 原生 API** — 同时支持 `/v1beta/models/{model}:generateContent`
 - **流式输出** — SSE 流式返回
 - **多轮对话** — 正确的 user/model 交替结构
@@ -43,10 +43,19 @@ docker run -d \
   -v aistudio-api-data:/app/data \
   ghcr.io/chrysoljq/aistudio-api:latest
 ```
+### 登录
+#### CLI 模式
+```bash
+# 启动无头浏览器进行交互式登录，支持手机确认/安全码/验证器 3 种方式
+python3 main.py login
+
+# 有头，调试或手动登录
+python3 main.py login --headed
+```
 #### 有头模式，适合本地
 首次启动后，访问 http://localhost:8080 进行 Google 账号登录，支持浏览器登录和手动导入cookies（访问）。
 ![alt text](image/login.png)
-#### 使用 cookies 登录
+#### 使用 cookies 登录，有效期短
 访问 https://myaccount.google.com/ ，复制 cookies 导入。仅测试过 chrome->cloakbrowser，跨内核可能不支持。重启生效。
 ![alt text](image/cookie.png)
 ## 使用示例

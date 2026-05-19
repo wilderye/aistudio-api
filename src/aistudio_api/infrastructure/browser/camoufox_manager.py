@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import subprocess
 import sys
 import time
@@ -21,6 +22,13 @@ from aistudio_api.infrastructure.browser.browser_engine import (
 
 logger = logging.getLogger("aistudio.camoufox")
 LAUNCHER_PATH = Path(__file__).with_name("camoufox_launcher.py")
+
+
+def _pick_free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        return int(sock.getsockname()[1])
 
 
 class CamoufoxManager:
@@ -48,17 +56,19 @@ class CamoufoxManager:
             logger.info("Using %s backend", describe_browser_backend())
             return None
 
+        existing_data = None
         try:
             import urllib.request
 
             resp = urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json", timeout=2)
-            data = json.loads(resp.read())
-            if "wsEndpointPath" in data:
-                self._ws_endpoint = f"ws://127.0.0.1:{self.port}{data['wsEndpointPath']}"
-                logger.info("Found existing Camoufox at %s", self._ws_endpoint)
-                return self._ws_endpoint
+            existing_data = json.loads(resp.read())
         except Exception:
-            pass
+            existing_data = None
+
+        if existing_data is not None:
+            old_port = self.port
+            self.port = _pick_free_local_port()
+            logger.info("Port %s already has a browser, switching login flow to free port %s", old_port, self.port)
 
         logger.info("Starting Camoufox on port %s...", self.port)
         cmd = [

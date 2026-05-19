@@ -34,9 +34,20 @@ class AccountService:
         """获取当前活跃账号。"""
         return self._store.get_active_account()
 
-    async def start_login(self, name: str | None = None) -> str:
+    async def start_login(
+        self,
+        name: str | None = None,
+        *,
+        headless: bool = False,
+        ui_locale: str | None = None,
+    ) -> str:
         """启动登录流程，返回 session_id。"""
-        return await self._login.start_login(self._store, name)
+        return await self._login.start_login(
+            self._store,
+            name,
+            headless=headless,
+            ui_locale=ui_locale,
+        )
 
     def get_login_status(self, session_id: str) -> LoginSession | None:
         """获取登录状态。"""

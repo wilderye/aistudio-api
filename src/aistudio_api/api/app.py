@@ -96,7 +96,7 @@ app.include_router(system_public_router)
 app.include_router(system_protected_router, dependencies=[Depends(require_api_key)])
 app.include_router(gemini_router, dependencies=[Depends(require_api_key)])
 app.include_router(openai_router, dependencies=[Depends(require_api_key)])
-app.include_router(anthropic_router， dependencies=[Depends(require_api_key)])
+app.include_router(anthropic_router, dependencies=[Depends(require_api_key)])
 app.include_router(accounts_router, dependencies=[Depends(require_api_key)])
 
 # 挂载静态文件

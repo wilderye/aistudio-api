@@ -17,6 +17,7 @@ dependencies = [
   "uvicorn>=0.30.0",
   "python-dotenv>=1.0.0",
   "cloakbrowser",
+  "python-multipart>=0.0.9"
 ]
 
 [project.scripts]

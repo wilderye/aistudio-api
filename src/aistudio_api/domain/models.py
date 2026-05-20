@@ -104,15 +104,31 @@ def _iter_response_chunks(outer: Any) -> list[list]:
     if isinstance(outer, list) and outer:
         if len(outer) == 1 and isinstance(outer[0], list):
             inner = outer[0]
-            if all(_looks_like_response_chunk(item) for item in inner if isinstance(item, list)):
-                return [item for item in inner if isinstance(item, list)]
-        if all(_looks_like_response_chunk(item) for item in outer if isinstance(item, list)):
-            return [item for item in outer if isinstance(item, list)]
+            nested_chunks = [item for item in inner if _looks_like_response_chunk(item)]
+            if nested_chunks:
+                return nested_chunks
+        top_level_chunks = [item for item in outer if _looks_like_response_chunk(item)]
+        if len(top_level_chunks) > 1:
+            return top_level_chunks
 
     if _looks_like_response_chunk(outer):
         return [outer]
 
     return []
+
+
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and (stripped.isdigit() or (stripped[0] in "+-" and stripped[1:].isdigit())):
+            return int(stripped)
+    return None
 
 
 def _parse_response_part(raw_part: Any) -> ResponsePart:
@@ -222,16 +238,23 @@ def _decode_wire_value(value: Any) -> Any:
 def _parse_usage_metadata(raw_usage: Any) -> dict[str, Any]:
     if not isinstance(raw_usage, list):
         return {}
-    visible_completion_tokens = raw_usage[1] if len(raw_usage) > 1 else None
-    reasoning_tokens = raw_usage[9] if len(raw_usage) > 9 else None
+    prompt_tokens = _coerce_int(raw_usage[0] if len(raw_usage) > 0 else None)
+    visible_completion_tokens = _coerce_int(raw_usage[1] if len(raw_usage) > 1 else None)
+    total_tokens = _coerce_int(raw_usage[2] if len(raw_usage) > 2 else None)
+    cached_tokens = _coerce_int(raw_usage[3] if len(raw_usage) > 3 else None)
+    reasoning_tokens = _coerce_int(raw_usage[9] if len(raw_usage) > 9 else None)
     completion_tokens = visible_completion_tokens
     if isinstance(visible_completion_tokens, int) and isinstance(reasoning_tokens, int):
         completion_tokens = visible_completion_tokens + reasoning_tokens
+    elif completion_tokens is None:
+        completion_tokens = reasoning_tokens
+    if total_tokens is None and isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
+        total_tokens = prompt_tokens + completion_tokens
     return {
-        "prompt_tokens": raw_usage[0] if len(raw_usage) > 0 else None,
+        "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
-        "total_tokens": raw_usage[2] if len(raw_usage) > 2 else None,
-        "cached_tokens": raw_usage[3] if len(raw_usage) > 3 else None,
+        "total_tokens": total_tokens,
+        "cached_tokens": cached_tokens,
         "prompt_tokens_details": raw_usage[4] if len(raw_usage) > 4 else None,
         "completion_tokens_details": {
             "reasoning_tokens": reasoning_tokens or 0,

@@ -56,10 +56,26 @@ def test_sse_usage_chunk_matches_openai_style_shape():
 
 
 def test_normalize_usage_defaults_missing_values_to_zero():
-    assert normalize_usage(None) == {
+    assert normalize_usage(None).model_dump(mode="json") == {
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "total_tokens": 0,
+        "completion_tokens_details": {"reasoning_tokens": 0},
+    }
+
+
+def test_normalize_usage_ignores_non_numeric_values():
+    assert normalize_usage(
+        {
+            "prompt_tokens": [[["bad"]]],
+            "completion_tokens": "7",
+            "total_tokens": [1, 2, 3],
+            "completion_tokens_details": {"reasoning_tokens": [5]},
+        }
+    ).model_dump(mode="json") == {
+        "prompt_tokens": 0,
+        "completion_tokens": 7,
+        "total_tokens": 7,
         "completion_tokens_details": {"reasoning_tokens": 0},
     }
 
@@ -72,7 +88,7 @@ def test_to_gemini_usage_metadata_uses_visible_and_reasoning_tokens():
             "total_tokens": 325,
             "completion_tokens_details": {"reasoning_tokens": 290, "visible_tokens": 26},
         }
-    ) == {
+    ).model_dump(mode="json") == {
         "promptTokenCount": 9,
         "candidatesTokenCount": 26,
         "thoughtsTokenCount": 290,
@@ -87,10 +103,10 @@ def test_chat_completion_response_maps_function_calls_to_openai_tool_calls():
         function_calls=[{"name": "getWeather", "args": {"city": "Shanghai"}}],
     )
 
-    choice = response["choices"][0]
-    assert choice["finish_reason"] == "tool_calls"
-    assert choice["message"]["tool_calls"][0]["function"]["name"] == "getWeather"
-    assert json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"]) == {"city": "Shanghai"}
+    choice = response.choices[0]
+    assert choice.finish_reason == "tool_calls"
+    assert choice.message.tool_calls[0].function.name == "getWeather"
+    assert json.loads(choice.message.tool_calls[0].function.arguments) == {"city": "Shanghai"}
 
 
 def test_sse_chunk_can_emit_tool_calls_delta():
@@ -120,14 +136,14 @@ def test_to_gemini_parts_keeps_function_call_and_response_parts():
         function_responses=[{"name": "getWeather", "args": {"temperature": "24C"}}],
     )
 
-    assert parts == [
+    assert [part.model_dump(mode="json", exclude_none=True) for part in parts] == [
         {"functionCall": {"name": "getWeather", "args": {"city": "Shanghai"}}},
         {"functionResponse": {"name": "getWeather", "response": {"temperature": "24C"}}},
     ]
 
 
 def test_to_gemini_parts_can_emit_thought_part():
-    assert to_gemini_parts("答案", thinking="思考") == [
+    assert [part.model_dump(mode="json", exclude_none=True) for part in to_gemini_parts("答案", thinking="思考")] == [
         {"text": "思考", "thought": True},
         {"text": "答案"},
     ]

@@ -40,26 +40,55 @@ def new_message_id() -> str:
     return f"msg_{uuid.uuid4().hex[:24]}"
 
 
+def _coerce_usage_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and (stripped.isdigit() or (stripped[0] in "+-" and stripped[1:].isdigit())):
+            return int(stripped)
+    return 0
+
+
 def normalize_usage(usage: dict | None = None) -> OpenAIUsage:
-    completion_details = (usage or {}).get("completion_tokens_details") or {}
+    usage = usage or {}
+    completion_details = usage.get("completion_tokens_details")
+    if not isinstance(completion_details, dict):
+        completion_details = {}
+    prompt_tokens = _coerce_usage_int(usage.get("prompt_tokens"))
+    completion_tokens = _coerce_usage_int(usage.get("completion_tokens"))
+    total_tokens = _coerce_usage_int(usage.get("total_tokens"))
+    if total_tokens == 0 and (prompt_tokens or completion_tokens):
+        total_tokens = prompt_tokens + completion_tokens
     return OpenAIUsage(
-        prompt_tokens=(usage or {}).get("prompt_tokens", 0) or 0,
-        completion_tokens=(usage or {}).get("completion_tokens", 0) or 0,
-        total_tokens=(usage or {}).get("total_tokens", 0) or 0,
-        completion_tokens_details={"reasoning_tokens": completion_details.get("reasoning_tokens", 0) or 0},
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        completion_tokens_details={"reasoning_tokens": _coerce_usage_int(completion_details.get("reasoning_tokens"))},
     )
 
 
 def to_gemini_usage_metadata(usage: dict | None = None) -> GeminiUsageMetadata:
-    completion_details = (usage or {}).get("completion_tokens_details") or {}
-    reasoning_tokens = completion_details.get("reasoning_tokens", 0) or 0
-    visible_tokens = completion_details.get("visible_tokens")
-    candidates_tokens = visible_tokens if visible_tokens is not None else (usage or {}).get("completion_tokens", 0)
+    usage = usage or {}
+    completion_details = usage.get("completion_tokens_details")
+    if not isinstance(completion_details, dict):
+        completion_details = {}
+    reasoning_tokens = _coerce_usage_int(completion_details.get("reasoning_tokens"))
+    visible_tokens = _coerce_usage_int(completion_details.get("visible_tokens"))
+    candidates_tokens = visible_tokens or _coerce_usage_int(usage.get("completion_tokens"))
+    prompt_tokens = _coerce_usage_int(usage.get("prompt_tokens"))
+    total_tokens = _coerce_usage_int(usage.get("total_tokens"))
+    if total_tokens == 0 and (prompt_tokens or candidates_tokens or reasoning_tokens):
+        total_tokens = prompt_tokens + _coerce_usage_int(usage.get("completion_tokens"))
     return GeminiUsageMetadata(
-        promptTokenCount=(usage or {}).get("prompt_tokens", 0) or 0,
-        candidatesTokenCount=candidates_tokens or 0,
+        promptTokenCount=prompt_tokens,
+        candidatesTokenCount=candidates_tokens,
         thoughtsTokenCount=reasoning_tokens,
-        totalTokenCount=(usage or {}).get("total_tokens", 0) or 0,
+        totalTokenCount=total_tokens,
     )
 
 

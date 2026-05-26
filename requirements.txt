@@ -8,4 +8,4 @@ python-dotenv>=1.0.0
 PyYAML>=6.0.0
 python-multipart>=0.0.9
 cloakbrowser
-# camoufox  # 可选：AISTUDIO_BROWSER=camoufox 时需要
+# camoufox  # Optional: needed if AISTUDIO_BROWSER=camoufox

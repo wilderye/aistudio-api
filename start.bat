@@ -9,5 +9,5 @@ echo If download fails, please manually download from:
 echo   https://github.com/CloakHQ/cloakbrowser/releases
 echo and extract to: %CLOAKBROWSER_CACHE_DIR%\
 echo.
-%~dp0python\python.exe -m uvicorn aistudio_api.api.app:app --host 127.0.0.1 --port 8080
+python -m uvicorn aistudio_api.api.app:app --host 127.0.0.1 --port 8080
 pause

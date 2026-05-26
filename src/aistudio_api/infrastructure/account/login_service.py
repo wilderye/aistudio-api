@@ -6,7 +6,10 @@ import asyncio
 import logging
 import secrets
 import sys
-import termios
+try:
+    import termios
+except ImportError:
+    termios = None
 import time
 from urllib.parse import urlencode
 from dataclasses import dataclass, field
@@ -120,7 +123,7 @@ class LoginService:
         try:
             sys.stdout.write(prompt)
             sys.stdout.flush()
-            if sensitive and sys.stdin.isatty():
+            if sensitive and sys.stdin.isatty() and termios is not None:
                 old_attrs = termios.tcgetattr(fd)
                 new_attrs = termios.tcgetattr(fd)
                 new_attrs[3] &= ~termios.ECHO
@@ -134,7 +137,7 @@ class LoginService:
                 loop.remove_reader(fd)
             except Exception:
                 pass
-            if old_attrs is not None:
+            if old_attrs is not None and termios is not None:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
                 sys.stdout.write("\n")
                 sys.stdout.flush()

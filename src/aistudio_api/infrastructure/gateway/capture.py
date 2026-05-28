@@ -86,6 +86,9 @@ class RequestCaptureService:
         logger.info("Hook 模板已就绪: model=%s", model)
         return template
 
+    def clear_templates(self) -> None:
+        self._templates.clear()
+
     def _build_capture_content(self, prompt: str, images: list[str] | None) -> AistudioContent:
         parts = [AistudioPart(text=prompt)]
         return AistudioContent(role="user", parts=parts)

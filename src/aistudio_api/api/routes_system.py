@@ -118,3 +118,17 @@ async def force_next_account(runtime_state=Depends(get_runtime_state)):
             "email": result.email,
         },
     }
+
+
+@protected_router.post("/system/session/reset")
+async def reset_session(runtime_state=Depends(get_runtime_state)):
+    client = runtime_state.client
+    busy_lock = runtime_state.busy_lock
+    if client is None or busy_lock is None:
+        raise HTTPException(503, detail="service not ready")
+
+    async with busy_lock.exclusive():
+        try:
+            return await client.reset_session(cleanup_old=True)
+        except Exception as exc:
+            raise HTTPException(500, detail=f"session reset failed: {exc}") from exc

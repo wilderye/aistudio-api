@@ -197,6 +197,9 @@ class BrowserSession:
         await self._run_sync(self._ensure_botguard_service_sync)
         return True
 
+    async def reset_session(self, *, cleanup_old: bool = True) -> dict[str, Any]:
+        return await self._run_sync(self._reset_session_sync, cleanup_old)
+
     async def import_cookies(self, cookie_string: str, auth_file: str | None = None) -> int:
         """注入 cookie 字符串到浏览器，访问页面获取完整 cookie，再导出保存。"""
         def _sync():
@@ -621,6 +624,69 @@ class BrowserSession:
                 log.warning("auto template capture failed: %s", e)
         url, headers = self._get_captured_info()
         return page, url, headers
+
+    def _reset_session_sync(self, cleanup_old: bool = True) -> dict[str, Any]:
+        self._ensure_browser_sync()
+        old_page = self._hook_page
+        old_prompt = self._current_prompt_resource_sync(old_page)
+        old_headers = self._captured_headers_sync()
+        old_templates = dict(self._templates)
+        old_bootstrap_template = dict(self._bootstrap_template) if self._bootstrap_template else None
+        old_snap_key = self._snap_key
+        cleanup_result = {"attempted": False, "ok": False, "error": None}
+
+        if self._ctx is None:
+            raise RuntimeError("browser context is not initialized")
+
+        new_page = self._ctx.new_page()
+        sync_maximize_page_window(new_page)
+        try:
+            self._templates.clear()
+            self._bootstrap_template = None
+            self._snap_key = None
+            self._goto_aistudio_sync(new_page)
+            self._install_hooks_sync(new_page)
+
+            previous_page = self._hook_page
+            self._hook_page = new_page
+            self._ensure_botguard_service_sync()
+            new_prompt = self._current_prompt_resource_sync(new_page)
+
+            if cleanup_old and old_prompt and old_prompt != new_prompt:
+                cleanup_result = self._delete_prompt_sync(
+                    old_prompt,
+                    page=old_page,
+                    headers=old_headers,
+                )
+                if cleanup_result.get("ok"):
+                    log.info("Cleaned old AI Studio prompt: %s", old_prompt)
+                else:
+                    log.warning("Failed to clean old AI Studio prompt %s: %s", old_prompt, cleanup_result.get("error"))
+
+            if previous_page is not None and previous_page is not new_page:
+                try:
+                    previous_page.close()
+                except Exception:
+                    pass
+
+            return {
+                "ok": True,
+                "old_prompt": old_prompt,
+                "new_prompt": new_prompt,
+                "cleanup_attempted": cleanup_result.get("attempted", False),
+                "cleanup_ok": cleanup_result.get("ok", False),
+                "cleanup_error": cleanup_result.get("error"),
+            }
+        except Exception:
+            try:
+                new_page.close()
+            except Exception:
+                pass
+            self._hook_page = old_page
+            self._templates = old_templates
+            self._bootstrap_template = old_bootstrap_template
+            self._snap_key = old_snap_key
+            raise
 
     def _switch_auth_sync(self, auth_file: str | None) -> None:
         self._auth_file = auth_file

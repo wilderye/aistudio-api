@@ -69,6 +69,15 @@ class AIStudioClient:
         """清除 snapshot 缓存。"""
         _snapshot_cache.clear()
 
+    def clear_capture_templates(self) -> None:
+        self._capture_service.clear_templates()
+
+    async def reset_session(self, *, cleanup_old: bool = True) -> dict:
+        result = await self._session.reset_session(cleanup_old=cleanup_old)
+        self.clear_snapshot_cache()
+        self.clear_capture_templates()
+        return result
+
     def _dump_raw_exchange(
         self,
         *,

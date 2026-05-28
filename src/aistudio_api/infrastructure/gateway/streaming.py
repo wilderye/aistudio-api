@@ -13,6 +13,10 @@ from aistudio_api.domain.errors import RequestError, classify_error
 from aistudio_api.domain.models import parse_chunk_usage, parse_response_chunk
 from aistudio_api.infrastructure.gateway.capture import CapturedRequest
 from aistudio_api.infrastructure.gateway.request_rewriter import modify_body
+from aistudio_api.infrastructure.gateway.response_diagnostics import (
+    log_stream_candidate_diag,
+    log_stream_done_diag,
+)
 from aistudio_api.infrastructure.gateway.session import BrowserSession
 from aistudio_api.infrastructure.gateway.stream_parser import IncrementalJSONStreamParser
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent
@@ -112,6 +116,13 @@ class StreamingGateway:
         latest_usage: dict | None = None
         raw_parts: list[str] = []
         status_code = 0
+        parsed_chunks = 0
+        body_chars = 0
+        thinking_chars = 0
+        tool_call_chunks = 0
+        final_finish_reason: int | None = None
+        final_finish_message = ""
+        final_safety_ratings: list | None = None
 
         async for event_type, payload in self._session.send_streaming_request(
             body=modified_body,
@@ -127,18 +138,42 @@ class StreamingGateway:
                     if usage:
                         latest_usage = usage
                     candidate = parse_response_chunk(parsed_chunk)
+                    parsed_chunks += 1
+                    body_chars += len(candidate.text)
+                    thinking_chars += len(candidate.thinking)
+                    if candidate.function_calls:
+                        tool_call_chunks += 1
+                    if candidate.finish_reason is not None:
+                        final_finish_reason = candidate.finish_reason
+                    if candidate.finish_message:
+                        final_finish_message = candidate.finish_message
+                    if candidate.safety_ratings:
+                        final_safety_ratings = candidate.safety_ratings
+                    diag_event_types = []
                     if candidate.thinking:
+                        diag_event_types.append("thinking")
                         yield ("thinking", candidate.thinking)
                     if candidate.reasoning_images:
+                        diag_event_types.append("reasoning_images")
                         yield ("reasoning_images", candidate.reasoning_images)
                     if candidate.function_calls:
+                        diag_event_types.append("tool_calls")
                         yield ("tool_calls", candidate.function_calls)
                     if candidate.images:
+                        diag_event_types.append("images")
                         yield ("images", candidate.images)
                     if candidate.text:
+                        diag_event_types.append("body")
                         yield ("body", candidate.text)
                     if candidate.thought_signature:
+                        diag_event_types.append("thought_signature")
                         yield ("thought_signature", candidate.thought_signature)
+                    log_stream_candidate_diag(
+                        model=model,
+                        chunk_index=parsed_chunks,
+                        event_types=diag_event_types,
+                        candidate=candidate,
+                    )
 
         raw_response = "".join(raw_parts)
         _dump_stream_exchange(
@@ -147,6 +182,17 @@ class StreamingGateway:
             modified_body=modified_body,
             status_code=status_code,
             raw_response=raw_response,
+        )
+        log_stream_done_diag(
+            model=model,
+            status_code=status_code,
+            chunks=parsed_chunks,
+            body_chars=body_chars,
+            thinking_chars=thinking_chars,
+            tool_call_chunks=tool_call_chunks,
+            final_finish_reason=final_finish_reason,
+            final_finish_message=final_finish_message,
+            final_safety_ratings=final_safety_ratings,
         )
         if status_code != 200:
             detail = _summarize_error_body(raw_response)

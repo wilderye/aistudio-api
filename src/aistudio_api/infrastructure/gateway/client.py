@@ -15,6 +15,7 @@ from aistudio_api.infrastructure.gateway.capture import CapturedRequest, Request
 from aistudio_api.infrastructure.gateway.model_defaults import resolve_model_defaults
 from aistudio_api.infrastructure.gateway.request_rewriter import TOOLS_TEMPLATES, build_image_generation_search_tool, modify_body
 from aistudio_api.infrastructure.gateway.replay import RequestReplayService
+from aistudio_api.infrastructure.gateway.response_diagnostics import log_nonstream_response_diag
 from aistudio_api.infrastructure.gateway.session import BrowserSession
 from aistudio_api.infrastructure.gateway.streaming import StreamingGateway
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent, AistudioPart
@@ -290,6 +291,7 @@ class AIStudioClient:
         if status != 200:
             raise classify_error(status, raw_text)
         output = parse_text_output(raw_text)
+        log_nonstream_response_diag(model=model, status_code=status, output=output)
         output.model = model
         return output
 

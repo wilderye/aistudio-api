@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>AI Studio Proxy</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260528-session">
+  <link rel="stylesheet" href="/static/style.css?v=20260528-session2">
 </head>
 
 <body x-data="app()" x-init="init()" @click="configOpen=false">
@@ -250,7 +250,7 @@
             </button>
             <textarea x-ref="ta" x-model="draft" @keydown.enter.prevent="if(!$event.shiftKey)send()" @input="resizeTa()"
               placeholder="给 AI Studio 代理发送消息..." rows="1"></textarea>
-            <button class="send" :disabled="busy||(!draft.trim() && selectedImages.length === 0)||!model"
+            <button class="send" :disabled="busy||sessionCreating||(!draft.trim() && selectedImages.length === 0)||!model"
               @click="send()">
               <svg viewBox="0 0 24 24">
                 <line x1="12" y1="19" x2="12" y2="5" />
@@ -290,7 +290,8 @@
                 当前后台对话出现持续截断或安全审查污染时，可以打开新会话并删除旧会话。
               </div>
               <button class="btn btn-primary session-btn" :disabled="sessionCreating" @click="newStudioSession()">
-                新建 AI Studio 会话
+                <span x-show="!sessionCreating">新建 AI Studio 会话</span>
+                <span x-show="sessionCreating" x-cloak>正在新建...</span>
               </button>
             </div>
           </div>
@@ -454,7 +455,7 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-  <script src="/static/app.js?v=20260528-session"></script>
+  <script src="/static/app.js?v=20260528-session2"></script>
   <script defer src="/static/alpine.min.js"></script>
 </body>
 

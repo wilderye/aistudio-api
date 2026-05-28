@@ -292,7 +292,7 @@ function app() {
     removeImage(idx) { this.selectedImages.splice(idx, 1) },
 
     async send() {
-      const t = this.draft.trim(); const imgs = [...this.selectedImages]; if (!t && !imgs.length) return; if (this.busy || !this.model) return;
+      const t = this.draft.trim(); const imgs = [...this.selectedImages]; if (!t && !imgs.length) return; if (this.sessionCreating) { this.showToast('AI Studio 会话正在新建，请稍后再试'); return; } if (this.busy || !this.model) return;
       this.msgs.push({ role: 'user', content: t, images: imgs }); this.draft = ''; this.selectedImages = []; this.busy = true; this.resizeTa(); this.scrollDown(); this.saveToCache();
 
       // 生图模型走 /v1/images/edits (支持原始图片编辑)

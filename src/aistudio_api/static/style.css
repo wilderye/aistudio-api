@@ -73,6 +73,8 @@ tr:last-child td{border-bottom:none}
 .badge-gray{background:#f3f4f6;color:#374151}
 .btn{padding:8px 16px;border-radius:8px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px;font-weight:500;transition:.15s;font-family:inherit;display:inline-flex;align-items:center;gap:6px}
 .btn:hover{background:var(--hover)}
+.btn:disabled{opacity:.6;cursor:default}
+.btn:disabled:hover{background:inherit}
 .btn-primary{background:var(--green);color:#fff;border-color:var(--green)}
 .btn-primary:hover{background:#0e8c6b}
 .btn-danger{background:#fff;color:var(--red);border-color:var(--border)}

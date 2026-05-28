@@ -12,6 +12,7 @@ function app() {
     toast: { show: false, msg: '', t: null },
     cookieModal: { open: false, cookies: '', name: '', email: '', importing: false },
     loginInProgress: false,
+    sessionCreating: false,
 
     async init() {
       await this.checkAuth();
@@ -168,6 +169,28 @@ function app() {
 
     async saveRotation() { try { await this.apiFetch('/rotation/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.rotCfg.mode, cooldown_seconds: this.rotCfg.cooldown }) }); this.showToast('已保存'); this.loadRotation() } catch (e) { this.showToast('保存失败') } },
     async forceNext() { try { await this.apiFetch('/rotation/next', { method: 'POST' }); this.showToast('已切换账号'); this.loadAccounts() } catch (e) { this.showToast('切换失败') } },
+    async newStudioSession() {
+      if (this.sessionCreating) return;
+      if (!confirm('确定要新建 AI Studio 会话吗？')) return;
+      this.sessionCreating = true;
+      try {
+        const r = await this.apiFetch('/system/session/reset', { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+          this.showToast(d.detail || '新建 AI Studio 会话失败');
+          return;
+        }
+        if (d.cleanup_attempted && !d.cleanup_ok) {
+          this.showToast('新会话已打开，旧会话删除失败');
+        } else {
+          this.showToast('已新建 AI Studio 会话');
+        }
+      } catch (e) {
+        this.showToast('新建 AI Studio 会话失败');
+      } finally {
+        this.sessionCreating = false;
+      }
+    },
     async activateAccount(id) { try { await this.apiFetch(`/accounts/${id}/activate`, { method: 'POST' }); this.showToast('已激活'); this.loadAccounts(); this.loadRotation() } catch (e) { this.showToast('激活失败') } },
     async addAccount() {
       if (this.loginInProgress) return;

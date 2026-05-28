@@ -284,6 +284,16 @@
             </div>
           </div>
           <div class="card">
+            <div class="card-head">AI Studio 会话</div>
+            <div style="padding:20px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+              <div style="font-size:14px;color:var(--muted);line-height:1.6">
+                当前后台对话出现持续截断或安全审查污染时，可以打开新会话并删除旧会话。
+              </div>
+              <button class="btn btn-primary" :disabled="sessionCreating" @click="newStudioSession()"
+                x-text="sessionCreating?'新建中...':'新建 AI Studio 会话'"></button>
+            </div>
+          </div>
+          <div class="card">
             <div class="card-head">模型统计</div>
             <div class="table-wrap">
               <table>

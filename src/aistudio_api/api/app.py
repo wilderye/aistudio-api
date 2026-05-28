@@ -19,7 +19,7 @@ from .routes_gemini import router as gemini_router
 from .routes_openai import router as openai_router
 from .routes_system import protected_router as system_protected_router
 from .routes_system import public_router as system_public_router
-from .state import runtime_state
+from .state import RequestGate, runtime_state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("aistudio.server")
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
     )
     runtime_state.client = client
     from aistudio_api.config import settings as app_settings
-    runtime_state.busy_lock = asyncio.Semaphore(app_settings.max_concurrency)
+    runtime_state.busy_lock = RequestGate(app_settings.max_concurrency)
 
     # 注入 snapshot 缓存引用，切号时需要清除
     from aistudio_api.infrastructure.gateway.client import _snapshot_cache

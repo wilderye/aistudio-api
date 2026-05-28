@@ -77,6 +77,7 @@ tr:last-child td{border-bottom:none}
 .btn:disabled:hover{background:inherit}
 .btn-primary{background:var(--green);color:#fff;border-color:var(--green)}
 .btn-primary:hover{background:#0e8c6b}
+.session-btn{min-width:168px;justify-content:center;white-space:nowrap}
 .btn-danger{background:#fff;color:var(--red);border-color:var(--border)}
 .btn-danger:hover{background:#fef2f2;border-color:var(--red)}
 .btn-block{width:100%;justify-content:center}

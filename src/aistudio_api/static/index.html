@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>AI Studio Proxy</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20260528-session">
 </head>
 
 <body x-data="app()" x-init="init()" @click="configOpen=false">
@@ -289,8 +289,9 @@
               <div style="font-size:14px;color:var(--muted);line-height:1.6">
                 当前后台对话出现持续截断或安全审查污染时，可以打开新会话并删除旧会话。
               </div>
-              <button class="btn btn-primary" :disabled="sessionCreating" @click="newStudioSession()"
-                x-text="sessionCreating?'新建中...':'新建 AI Studio 会话'"></button>
+              <button class="btn btn-primary session-btn" :disabled="sessionCreating" @click="newStudioSession()">
+                新建 AI Studio 会话
+              </button>
             </div>
           </div>
           <div class="card">
@@ -453,7 +454,7 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260528-session"></script>
   <script defer src="/static/alpine.min.js"></script>
 </body>
 

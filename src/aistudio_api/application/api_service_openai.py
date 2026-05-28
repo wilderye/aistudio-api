@@ -85,6 +85,7 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                         top_k=req.top_k,
                         max_tokens=req.max_tokens,
                         tools=tools,
+                        safety_off=req.safety_off,
                     )
 
                 output = await client.generate_content(
@@ -103,6 +104,7 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                     max_tokens=req.max_tokens,
                     tools=tools,
                     sanitize_plain_text=True,
+                    safety_off=req.safety_off,
                 )
 
                 record_rotator_event("success")
@@ -257,6 +259,7 @@ def _build_streaming_response(
     top_k: int | None = None,
     max_tokens: int | None = None,
     tools: list[list] | None = None,
+    safety_off: bool = False,
 ) -> StreamingResponse:
     async def stream_response():
         busy_lock = runtime_state.busy_lock
@@ -288,6 +291,7 @@ def _build_streaming_response(
                             top_k=top_k,
                             max_tokens=max_tokens,
                             tools=tools,
+                            safety_off=safety_off,
                             force_refresh_capture=stream_attempt > 0,
                         ):
                             has_yielded_data = True

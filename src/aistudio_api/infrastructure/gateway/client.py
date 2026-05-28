@@ -174,6 +174,7 @@ class AIStudioClient:
         generation_config_overrides: dict | None = None,
         sanitize_plain_text: bool = True,
         force_refresh_capture: bool = False,
+        safety_off: bool = False,
     ):
         captured = await self.capture_request(
             prompt=capture_prompt,
@@ -196,6 +197,7 @@ class AIStudioClient:
             max_tokens=max_tokens,
             generation_config_overrides=generation_config_overrides,
             sanitize_plain_text=sanitize_plain_text,
+            safety_off=safety_off,
         ):
             yield event
 
@@ -253,6 +255,7 @@ class AIStudioClient:
         max_tokens: Optional[int] = None,
         generation_config_overrides: dict | None = None,
         sanitize_plain_text: bool = True,
+        safety_off: bool = False,
     ) -> ModelOutput:
         logger.info("拦截请求: %r", f"{capture_prompt[:20]}...")
         captured = await self.capture_request(capture_prompt, model=model, images=capture_images, contents=contents)
@@ -272,6 +275,7 @@ class AIStudioClient:
             max_tokens=max_tokens,
             generation_config_overrides=generation_config_overrides,
             sanitize_plain_text=sanitize_plain_text,
+            safety_off=safety_off,
         )
 
         status, raw = await self._replay_service.replay(captured, body=modified_body)

@@ -38,6 +38,7 @@ class ChatRequest(BaseModel):
     max_tokens: Optional[int] = None
     tools: Optional[list[OpenAITool]] = None
     stream_options: "StreamOptions | None" = None
+    safety_off: bool = True
 
 
 class StreamOptions(BaseModel):

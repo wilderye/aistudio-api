@@ -84,6 +84,7 @@ class StreamingGateway:
         max_tokens: int | None = None,
         generation_config_overrides: dict | None = None,
         sanitize_plain_text: bool = True,
+        safety_off: bool = False,
     ) -> AsyncGenerator[tuple[str, object | None], None]:
         if not captured:
             raise ValueError("captured request is required")
@@ -104,6 +105,7 @@ class StreamingGateway:
             max_tokens=max_tokens,
             generation_config_overrides=generation_config_overrides,
             sanitize_plain_text=sanitize_plain_text,
+            safety_off=safety_off,
         )
 
         parser = IncrementalJSONStreamParser()

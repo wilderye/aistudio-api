@@ -229,7 +229,7 @@ async def handle_anthropic_messages(req: AnthropicMessageRequest, client: AIStud
                     runtime_state.record(model, "rate_limited")
                     last_error = exc
                     record_rotator_event("rate_limited")
-                    if await try_switch_account():
+                    if await try_switch_account(current_request_holds_gate=True):
                         logger.info("Anthropic 429 限流，已切换账号，重试 %d/%d", attempt + 1, MAX_RETRIES)
                         continue
                     raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_error"}) from exc
@@ -378,7 +378,7 @@ def _build_anthropic_streaming_response(
                     except UsageLimitExceeded as exc:
                         runtime_state.record(model, "rate_limited")
                         record_rotator_event("rate_limited")
-                        if not has_yielded_model_data and stream_attempt < MAX_RETRIES - 1 and await try_switch_account():
+                        if not has_yielded_model_data and stream_attempt < MAX_RETRIES - 1 and await try_switch_account(current_request_holds_gate=True):
                             logger.warning("Anthropic stream 429 限流，已切换账号，重试 %d/%d", stream_attempt + 1, MAX_RETRIES)
                             continue
                         raise exc

@@ -48,7 +48,7 @@ async def build_inline_image_parts(image_files: list) -> list[AistudioPart]:
     return parts
 
 
-async def try_switch_account() -> bool:
+async def try_switch_account(*, current_request_holds_gate: bool = False) -> bool:
     """尝试切换到下一个可用账号。返回是否成功切换。"""
     rotator = runtime_state.rotator
     if rotator is None:
@@ -62,6 +62,18 @@ async def try_switch_account() -> bool:
     client = runtime_state.client
     if not all([account_service, client]):
         return False
+
+    busy_lock = runtime_state.busy_lock
+    if current_request_holds_gate and busy_lock is not None and hasattr(busy_lock, "exclusive"):
+        async with busy_lock.exclusive(current_shared=True):
+            result = await account_service.activate_account(
+                next_account.id,
+                client._session,
+                runtime_state.snapshot_cache,
+                None,
+                keep_snapshot_cache=False,
+            )
+        return result is not None
 
     result = await account_service.activate_account(
         next_account.id,
@@ -87,7 +99,7 @@ async def ensure_active_account(attempt: int) -> None:
         return
     account_svc = runtime_state.account_service
     if account_svc and not account_svc.get_active_account():
-        await try_switch_account()
+        await try_switch_account(current_request_holds_gate=True)
 
 
 def record_rotator_event(event: str) -> None:

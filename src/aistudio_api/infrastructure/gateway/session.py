@@ -186,8 +186,8 @@ class BrowserSession:
     async def ensure_context(self):
         return await self._run_sync(self._ensure_browser_sync)
 
-    async def switch_auth(self, auth_file: str | None) -> None:
-        await self._run_sync(self._switch_auth_sync, auth_file)
+    async def switch_auth(self, auth_file: str | None, *, cleanup_old: bool = False) -> dict[str, Any]:
+        return await self._run_sync(self._switch_auth_sync, auth_file, cleanup_old)
 
     async def ensure_hook_page(self):
         await self._run_sync(self._ensure_hook_page_sync)
@@ -229,7 +229,7 @@ class BrowserSession:
                 or not original_auth_file
                 or Path(target_auth_file).resolve() != Path(original_auth_file).resolve()
             ):
-                self._switch_auth_sync(target_auth_file)
+                self._switch_auth_sync(target_auth_file, cleanup_old=False)
                 switched_target = True
                 target_ctx = self._ensure_browser_sync()
             elif self._ctx is None:
@@ -259,7 +259,7 @@ class BrowserSession:
                 return len(browser_cookies or pw_cookies)
             finally:
                 if switched_target and original_auth_file:
-                    self._switch_auth_sync(original_auth_file)
+                    self._switch_auth_sync(original_auth_file, cleanup_old=False)
                     self._profile_dir = original_profile_dir
                     if had_live_context:
                         try:
@@ -688,12 +688,118 @@ class BrowserSession:
             self._snap_key = old_snap_key
             raise
 
-    def _switch_auth_sync(self, auth_file: str | None) -> None:
-        self._auth_file = auth_file
-        self._profile_dir = self._derive_profile_dir(auth_file)
+    def _detach_live_resources_sync(self) -> dict[str, Any] | None:
+        if self._ctx is None:
+            return None
+        resources = {
+            "ctx": self._ctx,
+            "browser": self._browser,
+            "cf": self._cf,
+            "playwright": self._playwright,
+            "page": self._hook_page,
+            "prompt": self._current_prompt_resource_sync(self._hook_page),
+            "headers": self._captured_headers_sync(),
+            "templates": dict(self._templates),
+            "bootstrap_template": dict(self._bootstrap_template) if self._bootstrap_template else None,
+            "snap_key": self._snap_key,
+            "auth_file": self._auth_file,
+            "profile_dir": self._profile_dir,
+        }
+        self._hook_page = None
+        self._ctx = None
+        self._browser = None
+        self._cf = None
+        self._playwright = None
         self._templates.clear()
         self._bootstrap_template = None
-        self._close_sync()
+        self._snap_key = None
+        return resources
+
+    def _restore_detached_resources_sync(self, resources: dict[str, Any] | None) -> None:
+        if not resources:
+            return
+        self._ctx = resources.get("ctx")
+        self._browser = resources.get("browser")
+        self._cf = resources.get("cf")
+        self._playwright = resources.get("playwright")
+        self._hook_page = resources.get("page")
+        self._templates = dict(resources.get("templates") or {})
+        self._bootstrap_template = resources.get("bootstrap_template")
+        self._snap_key = resources.get("snap_key")
+        self._auth_file = resources.get("auth_file")
+        self._profile_dir = resources.get("profile_dir")
+
+    def _close_detached_resources_sync(self, resources: dict[str, Any] | None) -> None:
+        if not resources:
+            return
+        ctx = resources.get("ctx")
+        if ctx is not None:
+            try:
+                ctx.close()
+            except Exception:
+                pass
+        browser = resources.get("browser")
+        if browser is not None and resources.get("cf") is None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        cf = resources.get("cf")
+        if cf is not None:
+            try:
+                cf.__exit__(None, None, None)
+            except Exception:
+                pass
+        playwright = resources.get("playwright")
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
+
+    def _switch_auth_sync(self, auth_file: str | None, cleanup_old: bool = False) -> dict[str, Any]:
+        old_resources = self._detach_live_resources_sync() if cleanup_old else None
+        cleanup_result = {"attempted": False, "ok": False, "error": None}
+        if not cleanup_old:
+            self._close_sync()
+        try:
+            self._auth_file = auth_file
+            self._profile_dir = self._derive_profile_dir(auth_file)
+            self._templates.clear()
+            self._bootstrap_template = None
+            self._snap_key = None
+            self._ensure_browser_sync()
+            self._ensure_botguard_service_sync()
+        except Exception:
+            self._close_sync()
+            self._restore_detached_resources_sync(old_resources)
+            raise
+
+        try:
+            if cleanup_old and old_resources and old_resources.get("prompt"):
+                cleanup_result = self._delete_prompt_sync(
+                    old_resources.get("prompt"),
+                    page=old_resources.get("page"),
+                    headers=old_resources.get("headers") or {},
+                )
+                if cleanup_result.get("ok"):
+                    log.info("Cleaned old AI Studio prompt after account switch: %s", old_resources.get("prompt"))
+                else:
+                    log.warning(
+                        "Failed to clean old AI Studio prompt after account switch %s: %s",
+                        old_resources.get("prompt"),
+                        cleanup_result.get("error"),
+                    )
+
+            return {
+                "ok": True,
+                "old_prompt": old_resources.get("prompt") if old_resources else None,
+                "cleanup_attempted": cleanup_result.get("attempted", False),
+                "cleanup_ok": cleanup_result.get("ok", False),
+                "cleanup_error": cleanup_result.get("error"),
+            }
+        finally:
+            self._close_detached_resources_sync(old_resources)
 
     def _ensure_browser_sync(self):
         if self._ctx is not None and self._hook_page is not None and not self._hook_page.is_closed():

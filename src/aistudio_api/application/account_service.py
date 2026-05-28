@@ -86,8 +86,9 @@ class AccountService:
                 return None
 
             # 切换 BrowserSession 的 auth
-            await browser_session.switch_auth(str(auth_path))
+            switch_result = await browser_session.switch_auth(str(auth_path), cleanup_old=True)
             await browser_session.ensure_context()
+            logger.info("account switch session result: %s", switch_result)
 
             # 切号后默认清理 snapshot，避免旧页面态和新账号 cookies 混用。
             if not keep_snapshot_cache and snapshot_cache is not None:
@@ -102,10 +103,13 @@ class AccountService:
 
         # 获取 busy_lock 确保无请求在飞行中
         if busy_lock is not None:
+            exclusive = getattr(busy_lock, "exclusive", None)
+            if exclusive is not None:
+                async with busy_lock.exclusive():
+                    return await _do_switch()
             async with busy_lock:
                 return await _do_switch()
-        else:
-            return await _do_switch()
+        return await _do_switch()
 
     def delete_account(self, account_id: str) -> bool:
         """删除账号。"""

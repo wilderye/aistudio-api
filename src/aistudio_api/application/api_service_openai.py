@@ -119,7 +119,7 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                 last_error = exc
 
                 record_rotator_event("rate_limited")
-                if await try_switch_account():
+                if await try_switch_account(current_request_holds_gate=True):
                     logger.info("429 限流，已切换账号，重试 %d/%d", attempt + 1, MAX_RETRIES)
                     continue
                 logger.warning("429 限流，无法切换账号")
@@ -166,7 +166,7 @@ async def handle_image_generation(req: ImageRequest, client: AIStudioClient):
                 last_error = exc
 
                 record_rotator_event("rate_limited")
-                if await try_switch_account():
+                if await try_switch_account(current_request_holds_gate=True):
                     logger.info("Image 429 限流，已切换账号，重试 %d/%d", attempt + 1, MAX_RETRIES)
                     continue
                 logger.warning("Image 429 限流，无法切换账号")
@@ -225,7 +225,7 @@ async def handle_image_edit(
                 last_error = exc
 
                 record_rotator_event("rate_limited")
-                if await try_switch_account():
+                if await try_switch_account(current_request_holds_gate=True):
                     logger.info("Image Edit 429 限流，已切换账号，重试 %d/%d", attempt + 1, MAX_RETRIES)
                     continue
                 logger.warning("Image Edit 429 限流，无法切换账号")
@@ -310,7 +310,7 @@ def _build_streaming_response(
                     except UsageLimitExceeded:
                         runtime_state.record(model, "rate_limited")
                         record_rotator_event("rate_limited")
-                        if not has_yielded_data and stream_attempt < MAX_RETRIES - 1 and await try_switch_account():
+                        if not has_yielded_data and stream_attempt < MAX_RETRIES - 1 and await try_switch_account(current_request_holds_gate=True):
                             logger.warning("Stream 429 限流，已切换账号，重试 %d/%d", stream_attempt + 1, MAX_RETRIES)
                             continue
                         raise

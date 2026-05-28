@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -33,6 +34,35 @@ AI_STUDIO_URL_FALLBACK = "https://aistudio.google.com/app/prompts/new_chat"
 GOOGLE_LOGIN_BOOTSTRAP_URL = (
     "https://accounts.google.com/ServiceLogin?continue=https://aistudio.google.com"
 )
+DELETE_PROMPT_URL = (
+    "https://alkalimakersuite-pa.clients6.google.com/$rpc/"
+    "google.internal.alkali.applications.makersuite.v1.MakerSuiteService/DeletePrompt"
+)
+PROMPT_RESOURCE_RE = re.compile(r"/prompts/([^/?#]+)")
+
+
+def extract_prompt_resource_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    match = PROMPT_RESOURCE_RE.search(url)
+    if not match:
+        return None
+    prompt_id = match.group(1)
+    if prompt_id == "new_chat":
+        return None
+    return f"prompts/{prompt_id}"
+
+
+def headers_from_captured_request(captured: dict[str, Any] | None) -> dict[str, str]:
+    if not captured:
+        return {}
+    return {
+        k: v
+        for k, v in captured.get("headers", {}).items()
+        if k.lower() not in ("host", "content-length")
+    }
+
+
 INSTALL_HOOKS_JS = r"""
 mw:((() => {
     // Verify hooks are actually present on XHR prototype, not just a stale flag
@@ -320,14 +350,90 @@ class BrowserSession:
                 continue
         raise RuntimeError(f"bootstrap stayed on login flow: url={page.url}")
 
+    def _captured_headers_sync(self) -> dict[str, str]:
+        for captured in self._templates.values():
+            headers = headers_from_captured_request(captured)
+            if headers:
+                return headers
+        return headers_from_captured_request(self._bootstrap_template)
+
     def _get_captured_info(self) -> tuple[str, dict[str, str]]:
-        """Get captured URL and headers from template."""
-        for tpl in self._templates.values():
+        """Get captured URL and headers from a replayable template."""
+        candidates = list(self._templates.values())
+        if self._bootstrap_template:
+            candidates.append(self._bootstrap_template)
+        for tpl in candidates:
             if tpl.get("url"):
-                url = tpl["url"]
-                headers = {k: v for k, v in tpl.get("headers", {}).items() if k.lower() not in ("host", "content-length")}
-                return url, headers
+                return tpl["url"], headers_from_captured_request(tpl)
         raise RuntimeError("no captured URL available for replay")
+
+    def _current_prompt_resource_sync(self, page=None) -> str | None:
+        target_page = page or self._hook_page
+        try:
+            return extract_prompt_resource_from_url(target_page.url if target_page else None)
+        except Exception:
+            return None
+
+    def _delete_prompt_sync(
+        self,
+        prompt_resource: str | None,
+        *,
+        page=None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        if not prompt_resource:
+            return {"attempted": False, "ok": False, "error": "no prompt resource"}
+
+        target_page = page or self._hook_page
+        if target_page is None or target_page.is_closed():
+            return {"attempted": True, "ok": False, "error": "cleanup page is closed"}
+
+        request_headers = {
+            k: v
+            for k, v in (headers or {}).items()
+            if k.lower() not in ("host", "content-length")
+        }
+        request_headers["Content-Type"] = "application/json+protobuf"
+
+        try:
+            result = target_page.evaluate(
+                """async (args) => {
+                    return await new Promise((resolve) => {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('POST', args.url);
+                        for (const [key, value] of Object.entries(args.headers || {})) {
+                            try { xhr.setRequestHeader(key, value); } catch (e) {}
+                        }
+                        xhr.withCredentials = true;
+                        xhr.onload = () => resolve({status: xhr.status, body: xhr.responseText || ''});
+                        xhr.onerror = () => resolve({status: 0, body: 'network error'});
+                        xhr.ontimeout = () => resolve({status: 0, body: 'timeout'});
+                        xhr.timeout = 30000;
+                        xhr.send(JSON.stringify([args.promptResource]));
+                    });
+                }""",
+                {
+                    "url": DELETE_PROMPT_URL,
+                    "headers": request_headers,
+                    "promptResource": prompt_resource,
+                },
+            )
+        except Exception as exc:
+            return {
+                "attempted": True,
+                "ok": False,
+                "error": f"DeletePrompt exception: {exc}",
+            }
+
+        status = int(result.get("status") or 0)
+        body = result.get("body") or ""
+        return {
+            "attempted": True,
+            "ok": status == 200,
+            "status": status,
+            "body": body[:500],
+            "error": None if status == 200 else f"DeletePrompt failed: status={status} body={body[:200]}",
+        }
 
     def _send_streaming_request_sync(
         self,

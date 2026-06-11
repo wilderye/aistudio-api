@@ -348,9 +348,11 @@ class AIStudioClient:
         if output.images:
             img = output.images[0]
             ext = "jpg" if "jpeg" in img.mime else "png"
-            path = save_path if save_path and save_path.endswith(f".{ext}") else (
-                f"{save_path}.{ext}" if save_path else f"/tmp/aistudio_generated.{ext}"
-            )
+            if save_path:
+                path = save_path if save_path.endswith(f".{ext}") else f"{save_path}.{ext}"
+            else:
+                path = str(Path(settings.tmp_dir) / f"aistudio_generated.{ext}")
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
             with open(path, "wb") as file:
                 file.write(img.data)
             logger.info("图片已保存: %s (%s bytes)", path, img.size)

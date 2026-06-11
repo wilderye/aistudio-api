@@ -709,7 +709,7 @@ class BrowserSession:
         original_text = self._read_textarea_value_sync(textarea)
         page.on("request", on_request)
         try:
-            textarea.fill(BOTGUARD_BOOTSTRAP_PROMPT)
+            self._type_textarea_value_sync(page, textarea, BOTGUARD_BOOTSTRAP_PROMPT)
             page.wait_for_timeout(800)
             page.evaluate(DIALOG_CLEANUP_JS)
             if not self._click_run_button_sync(page):
@@ -778,7 +778,7 @@ class BrowserSession:
             if textarea is None:
                 raise RuntimeError("textarea not found during template capture")
             original_text = self._read_textarea_value_sync(textarea)
-            textarea.fill(TEMPLATE_CAPTURE_PROMPT)
+            self._type_textarea_value_sync(page, textarea, TEMPLATE_CAPTURE_PROMPT)
             page.wait_for_timeout(500)
             if not self._click_run_button_sync(page):
                 raise RuntimeError("failed to trigger send during template capture")
@@ -1132,23 +1132,51 @@ mw:((hash) => {
         raise RuntimeError(f"Hook install failed: {result} (url={page_url}, title={page_title!r})")
 
     def _click_run_button_sync(self, page) -> bool:
-        try:
-            button = page.query_selector("button:has-text('Run')")
-        except Exception:
-            return False
+        click_error: Exception | None = None
+        button = None
+        for selector in (
+            "button:has-text('Run')",
+            "button:has-text('Send')",
+            "button[aria-label*='Run' i]",
+            "button[aria-label*='Send' i]",
+            "button[aria-label*='Submit' i]",
+            "button[title*='Run' i]",
+            "button[title*='Send' i]",
+        ):
+            try:
+                candidate = page.query_selector(selector)
+            except Exception as exc:
+                click_error = exc
+                continue
+            if candidate is not None:
+                button = candidate
+                break
         if button is None:
+            self._log_click_diag_sync(page, "run button not found", click_error)
             return False
         try:
             button.click()
             return True
-        except Exception:
+        except Exception as exc:
+            self._log_click_diag_sync(page, "run button click failed", exc)
             return False
 
     def _has_run_button_sync(self, page) -> bool:
-        try:
-            return page.query_selector("button:has-text('Run')") is not None
-        except Exception:
-            return False
+        for selector in (
+            "button:has-text('Run')",
+            "button:has-text('Send')",
+            "button[aria-label*='Run' i]",
+            "button[aria-label*='Send' i]",
+            "button[aria-label*='Submit' i]",
+            "button[title*='Run' i]",
+            "button[title*='Send' i]",
+        ):
+            try:
+                if page.query_selector(selector) is not None:
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _wait_until_idle_sync(self, page) -> None:
         for _ in range(60):
@@ -1162,6 +1190,45 @@ mw:((hash) => {
             return textarea.input_value()
         except Exception:
             return ""
+
+    def _type_textarea_value_sync(self, page, textarea, value: str) -> None:
+        try:
+            textarea.click()
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Backspace")
+            page.keyboard.type(value, delay=25)
+            return
+        except Exception as exc:
+            log.debug("keyboard textarea input failed, falling back to fill: %s", exc)
+        textarea.fill(value)
+
+    def _log_click_diag_sync(self, page, reason: str, error: Exception | None = None) -> None:
+        try:
+            snapshot = page.evaluate(
+                """() => ({
+                    url: location.href,
+                    title: document.title,
+                    textareaCount: document.querySelectorAll('textarea').length,
+                    textareaValues: Array.from(document.querySelectorAll('textarea')).slice(0, 3).map((node) => node.value || ''),
+                    activeTag: document.activeElement ? document.activeElement.tagName : null,
+                    activeText: document.activeElement ? (document.activeElement.textContent || '').trim().slice(0, 80) : null,
+                    buttons: Array.from(document.querySelectorAll('button')).slice(0, 40).map((button) => ({
+                        text: (button.textContent || '').trim().slice(0, 80),
+                        aria: button.getAttribute('aria-label'),
+                        title: button.getAttribute('title'),
+                        disabled: button.disabled || button.getAttribute('aria-disabled') === 'true',
+                        visible: !!(button.offsetWidth || button.offsetHeight || button.getClientRects().length),
+                    })),
+                })"""
+            )
+        except Exception as exc:
+            snapshot = {"snapshot_error": str(exc)}
+        log.warning(
+            "click Run failed: reason=%s error=%s snapshot=%s",
+            reason,
+            str(error) if error else None,
+            json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+        )
 
     def _restore_textarea_value_sync(self, textarea, value: str) -> None:
         try:

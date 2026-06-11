@@ -23,6 +23,26 @@ async def stats():
     return stats_response()
 
 
+@protected_router.get("/debug/page-diag")
+async def page_diag(runtime_state=Depends(get_runtime_state)):
+    """Return page-side AI Studio request diagnostics for local investigation."""
+    client = runtime_state.client
+    if client is None:
+        raise HTTPException(503, detail="服务未就绪")
+    records = await client.get_page_diag_records()
+    state = await client.get_page_diag_state()
+    return {"records": records, "state": state}
+
+
+@protected_router.post("/debug/input-prime")
+async def input_prime(runtime_state=Depends(get_runtime_state)):
+    """Run only the input-prime diagnostic without sending a prompt."""
+    client = runtime_state.client
+    if client is None:
+        raise HTTPException(503, detail="服务未就绪")
+    return await client.prime_input_surface_debug()
+
+
 # ========== 轮询管理 API ==========
 
 class RotationModeRequest(BaseModel):

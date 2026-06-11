@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from aistudio_api.config import DEFAULT_BROWSER_PORT, DEFAULT_IMAGE_MODEL, DEFAULT_TEXT_MODEL, settings
-from aistudio_api.domain.errors import RequestError, classify_error
+from aistudio_api.domain.errors import AuthError, RequestError, classify_error
 from aistudio_api.domain.models import ModelOutput, parse_image_output, parse_text_output
 from aistudio_api.infrastructure.cache.snapshot_cache import SnapshotCache
 from aistudio_api.infrastructure.gateway.capture import CapturedRequest, RequestCaptureService
@@ -59,6 +59,24 @@ class AIStudioClient:
         if self._session is not None:
             await self._session.ensure_context()
             logger.info("浏览器预热完成")
+
+    async def get_page_diag_records(self) -> list[dict]:
+        """Return page-side diagnostic records captured by the AI Studio tab."""
+        if self._session is None:
+            return []
+        return await self._session.get_page_diag_records()
+
+    async def get_page_diag_state(self) -> dict:
+        """Return current page-side diagnostic state for local investigation."""
+        if self._session is None:
+            return {}
+        return await self._session.get_page_diag_state()
+
+    async def prime_input_surface_debug(self) -> dict:
+        """Run only the input-prime diagnostic without sending a prompt."""
+        if self._session is None:
+            return {}
+        return await self._session.prime_input_surface_debug()
 
     async def switch_auth(self, auth_file: str | None) -> None:
         """切换账号的 auth 文件。"""
@@ -266,6 +284,38 @@ class AIStudioClient:
 
         status, raw = await self._replay_service.replay(captured, body=modified_body)
         raw_text = raw.decode("utf-8", errors="replace")
+        if status != 200:
+            error = classify_error(status, raw_text)
+            if status == 204 or isinstance(error, AuthError):
+                logger.warning("GenerateContent 鉴权/snapshot 异常，清理 snapshot 缓存后重试一次: %s", error)
+                self.clear_snapshot_cache()
+                captured = await self.capture_request(
+                    capture_prompt,
+                    model=model,
+                    images=capture_images,
+                    contents=contents,
+                    force_refresh=True,
+                )
+                if not captured:
+                    raise RequestError(0, "无法拦截请求")
+                modified_body = modify_body(
+                    captured.body,
+                    model=model,
+                    contents=contents,
+                    system_instruction_content=system_instruction_content,
+                    tools=tools,
+                    safety_settings=safety_settings,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    max_tokens=max_tokens,
+                    generation_config_overrides=generation_config_overrides,
+                    sanitize_plain_text=sanitize_plain_text,
+                )
+                status, raw = await self._replay_service.replay(captured, body=modified_body)
+                raw_text = raw.decode("utf-8", errors="replace")
+            if status != 200:
+                raise classify_error(status, raw_text)
         self._dump_raw_exchange(
             kind="generate_content",
             model=model,
@@ -273,8 +323,6 @@ class AIStudioClient:
             modified_body=modified_body,
             raw_response=raw_text,
         )
-        if status != 200:
-            raise classify_error(status, raw_text)
         output = parse_text_output(raw_text)
         output.model = model
         return output

@@ -26,6 +26,7 @@ class ToolCall(BaseModel):
 class Message(BaseModel):
     role: str
     content: Optional[str | list[MessageContent]] = None
+    name: Optional[str] = None
     reasoning_content: Optional[str] = None
     tool_calls: Optional[list[ToolCall]] = None
     tool_call_id: Optional[str] = None

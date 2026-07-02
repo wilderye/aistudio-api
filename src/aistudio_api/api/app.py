@@ -96,7 +96,7 @@ _cors_origins = list(settings.cors_origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?",
     allow_methods=["*"],
     allow_headers=["*"],
 )

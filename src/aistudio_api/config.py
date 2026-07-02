@@ -181,7 +181,7 @@ class Settings:
     api_keys: frozenset[str] = _load_api_keys()
     cors_origins: tuple[str, ...] = _load_cors_origins()
     timeout_replay: int = int(os.getenv("AISTUDIO_TIMEOUT_REPLAY", "120"))
-    timeout_stream: int = int(os.getenv("AISTUDIO_TIMEOUT_STREAM", "120"))
+    timeout_stream: int = int(os.getenv("AISTUDIO_TIMEOUT_STREAM", "600"))
     timeout_capture: int = int(os.getenv("AISTUDIO_TIMEOUT_CAPTURE", "30"))
     snapshot_cache_ttl: int = int(os.getenv("AISTUDIO_SNAPSHOT_CACHE_TTL", "3600"))
     snapshot_cache_max: int = int(os.getenv("AISTUDIO_SNAPSHOT_CACHE_MAX", "100"))

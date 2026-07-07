@@ -33,6 +33,25 @@ def test_ipv4_and_ipv6_loopback_origins_are_allowed():
     assert ipv6_response.headers["access-control-allow-origin"] == "http://[::1]:8000"
 
 
+def test_local_desktop_webview_origins_are_allowed():
+    origins = [
+        "null",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "tauri://localhost",
+        "app://localhost",
+        "electron://localhost",
+        "capacitor://localhost",
+        "ionic://localhost",
+    ]
+
+    for origin in origins:
+        response = _preflight(origin)
+
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == origin
+
+
 def test_non_local_origin_is_not_allowed_by_default():
     response = _preflight("https://example.com")
 

@@ -97,7 +97,7 @@ def test_normalize_gemini_request_maps_official_image_generation_fields():
     assert normalized["contents"][0].parts[0].inline_data == ("image/jpeg", "/9j/4AAQSkZJRgABAQAA....")
 
 
-def test_normalize_gemini_request_encodes_function_declarations_to_wire_tools():
+def test_normalize_gemini_request_encodes_functions_and_merges_default_tools():
     req = GeminiGenerateContentRequest(
         contents=[GeminiContent(role="user", parts=[GeminiPart(text="hello")])],
         tools=[
@@ -129,7 +129,8 @@ def test_normalize_gemini_request_encodes_function_declarations_to_wire_tools():
                     [6, None, None, None, None, None, [["city", [1]]], None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, ["city"]],
                 ]
             ],
-        ]
+        ],
+        [None, None, None, [None, [[]]]],
     ]
 
 
@@ -189,6 +190,45 @@ def test_normalize_gemini_request_empty_tools_disables_model_defaults():
     normalized = normalize_gemini_request(req, "models/gemma-4-31b-it")
 
     assert normalized["tools"] == []
+
+
+def test_normalize_gemini_request_deduplicates_default_search_tool():
+    req = GeminiGenerateContentRequest(
+        contents=[GeminiContent(role="user", parts=[GeminiPart(text="hello")])],
+        tools=[{"googleSearch": {}}],
+    )
+
+    normalized = normalize_gemini_request(req, "models/gemma-4-31b-it")
+
+    assert normalized["tools"] == [[None, None, None, [None, [[]]]]]
+
+
+def test_normalize_gemini_request_ignores_unknown_safety_category():
+    req = GeminiGenerateContentRequest(
+        contents=[GeminiContent(role="user", parts=[GeminiPart(text="hello")])],
+        safetySettings=[
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        ],
+    )
+
+    normalized = normalize_gemini_request(req, "models/gemini-3.5-flash")
+
+    assert normalized["safety_settings"] == [[None, None, 7, 3], [None, None, 8, 4]]
+
+
+def test_normalize_gemini_request_still_rejects_invalid_known_threshold():
+    req = GeminiGenerateContentRequest(
+        contents=[GeminiContent(role="user", parts=[GeminiPart(text="hello")])],
+        safetySettings=[
+            {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "INVALID"},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Unsupported safety threshold"):
+        normalize_gemini_request(req, "models/gemini-3.5-flash")
 
 
 def test_normalize_gemini_request_rejects_unsupported_person_generation():

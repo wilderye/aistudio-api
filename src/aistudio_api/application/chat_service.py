@@ -40,6 +40,7 @@ def data_uri_to_file(uri: str, tmp_dir: str = "/tmp") -> str:
         raise ValueError("Invalid data URI")
     mime, b64 = match.group(1), match.group(2)
     ext = mime.split("/")[-1].replace("jpeg", "jpg")
+    os.makedirs(tmp_dir, exist_ok=True)
     path = os.path.join(tmp_dir, f"aistudio_img_{uuid.uuid4().hex[:8]}.{ext}")
     with open(path, "wb") as file:
         file.write(base64.b64decode(b64))
@@ -47,6 +48,7 @@ def data_uri_to_file(uri: str, tmp_dir: str = "/tmp") -> str:
 
 
 def url_to_file(url: str, tmp_dir: str = "/tmp") -> str:
+    os.makedirs(tmp_dir, exist_ok=True)
     path = os.path.join(tmp_dir, f"aistudio_img_{uuid.uuid4().hex[:8]}.jpg")
     with httpx.Client(timeout=30) as http:
         resp = http.get(url)
@@ -178,6 +180,7 @@ def cleanup_files(paths: list[str]):
 
 def inline_data_to_file(mime_type: str, data: str, tmp_dir: str = "/tmp") -> str:
     ext = mime_type.split("/")[-1].replace("jpeg", "jpg")
+    os.makedirs(tmp_dir, exist_ok=True)
     path = os.path.join(tmp_dir, f"aistudio_img_{uuid.uuid4().hex[:8]}.{ext}")
     with open(path, "wb") as file:
         file.write(base64.b64decode(data))
@@ -383,7 +386,7 @@ def _normalize_gemini_safety_settings(value: Any) -> list[list[Any]]:
 
         category = _GEMINI_SAFETY_CATEGORY_MAP.get(str(item.category).strip().upper())
         if category is None:
-            raise ValueError(f"Unsupported safety category: {item.category}")
+            continue
         threshold = _GEMINI_SAFETY_THRESHOLD_MAP.get(str(item.threshold).strip().upper())
         if threshold is None:
             raise ValueError(f"Unsupported safety threshold: {item.threshold}")

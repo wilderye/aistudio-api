@@ -15,6 +15,29 @@ def test_resolve_model_defaults_uses_repo_config_for_gemma():
     )
 
 
+def test_resolve_model_defaults_uses_repo_config_for_gemini():
+    defaults = resolve_model_defaults("models/gemini-3.5-flash")
+
+    assert defaults.default_tools == ()
+    assert defaults.safety_settings == (
+        (None, None, 7, 4),
+        (None, None, 8, 4),
+        (None, None, 9, 4),
+        (None, None, 10, 4),
+    )
+
+
+def test_resolve_model_defaults_uses_repo_config_for_images():
+    defaults = resolve_model_defaults("models/gemini-3.1-flash-image-preview")
+
+    assert defaults.is_image_model is True
+    assert defaults.default_tools == ()
+    assert defaults.disable_safety_settings is True
+    assert defaults.generation_config_defaults["image_output_mode"] == AistudioImageOutputMode.image_only()
+    assert defaults.generation_config_defaults["thinking_config"] == [1, None, None, 4]
+    assert defaults.clear_generation_config_indexes == (7, 13, 17)
+
+
 def test_resolve_model_defaults_merges_yaml_profiles(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

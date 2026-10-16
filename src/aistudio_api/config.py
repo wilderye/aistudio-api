@@ -74,6 +74,17 @@ def _load_api_keys() -> frozenset[str]:
     return frozenset(values)
 
 
+def _load_cors_origins() -> tuple[str, ...]:
+    raw = os.getenv("AISTUDIO_CORS_ORIGINS", "")
+    origins: list[str] = []
+    for line in raw.splitlines():
+        for part in line.split(","):
+            origin = part.strip().rstrip("/")
+            if origin and origin not in origins:
+                origins.append(origin)
+    return tuple(origins)
+
+
 def _default_chromium_sandbox() -> bool:
     # On many recent Linux distros (including Ubuntu with AppArmor userns
     # restrictions), Chromium sandboxing is unavailable unless the host has been
@@ -99,7 +110,7 @@ def discover_auth_file() -> str | None:
         if registry_path.exists():
             try:
                 import json
-                registry = json.loads(registry_path.read_text())
+                registry = json.loads(registry_path.read_text(encoding="utf-8"))
                 active_id = registry.get("active_account_id")
                 if active_id:
                     auth_path = root / "accounts" / active_id / "auth.json"
@@ -167,6 +178,7 @@ class Settings:
     tmp_dir: str = os.getenv("AISTUDIO_TMP_DIR", "/tmp")
     proxy_url: str | None = discover_proxy_url()
     api_keys: frozenset[str] = _load_api_keys()
+    cors_origins: tuple[str, ...] = _load_cors_origins()
     timeout_replay: int = int(os.getenv("AISTUDIO_TIMEOUT_REPLAY", "120"))
     timeout_stream: int = int(os.getenv("AISTUDIO_TIMEOUT_STREAM", "120"))
     timeout_capture: int = int(os.getenv("AISTUDIO_TIMEOUT_CAPTURE", "30"))

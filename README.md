@@ -4,6 +4,8 @@ Google AIStudio Playgroud 反代，支持 Google 会员（Pro/Ultra），支持 
 
 [English](./README_EN.md)
 
+本分支保留 Windows 与酒馆所需的少量兼容。双击 `start.bat` 启动；具体保留内容、跨域配置和验证方式见 [兼容说明](./COMPATIBILITY.md)。
+
 ## 目录
 
 - [AI Studio API](#ai-studio-api)

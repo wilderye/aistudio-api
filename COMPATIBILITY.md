@@ -1,6 +1,6 @@
 # Windows 与酒馆兼容说明
 
-本分支基于 [上游 f2c51b8](https://github.com/chrysoljq/aistudio-api/commit/f2c51b816910007fe143e14626bba5cbac7cb0de)，只保留已确认需要的兼容修改。
+本分支基于 [上游 f2c51b8](https://github.com/chrysoljq/aistudio-api/commit/f2c51b816910007fe143e14626bba5cbac7cb0de)，保留已确认需要的兼容修改，并修复登录完成检测误判。
 
 ## 使用方式
 
@@ -18,9 +18,9 @@
 | Windows 启动 | 提供双击启动脚本；启用 Python UTF-8；禁用 Cloakbrowser 自动更新，与此前启动方式一致 |
 | Windows 文件与终端 | 缺少 `termios` 时仍可导入登录服务；配置和账号文件按 UTF-8 读取；保存图片前创建临时目录 |
 | 酒馆思考显示 | OpenAI 完整回复和流式回复都使用 `reasoning_content` 输出思考内容 |
-| 网页跨域访问 | 默认允许 HTTP/HTTPS 的 `localhost`、`127.0.0.1`、`[::1]`，包括各自的不同端口；允许请求携带 Authorization、Content-Type 等头 |
+| 网页与桌面跨域访问 | 默认允许本地 HTTP/HTTPS 网页、Tauri/Electron 等本地桌面来源和 `null` 来源；允许请求携带 Authorization、Content-Type 等头 |
 | 过滤分类容错 | Gemini 请求中未知的内容过滤分类会被跳过；支持的分类和阈值仍正常处理，无效阈值仍报错 |
-| 等待时间 | 普通请求和流式请求均保持上游的 120 秒 |
+| 等待时间 | 普通请求保持 120 秒；流式请求默认为 900 秒（15 分钟） |
 
 跨域允许网页读取 API 回复，不会免除 API 密钥校验，也不参与 Google 登录。
 
@@ -30,7 +30,7 @@
 AISTUDIO_CORS_ORIGINS=http://192.168.1.10:8000,https://tavern.example.com
 ```
 
-只填写网页来源，即协议、主机和端口；不要填写 API 路径。修改后重启服务。桌面应用专用来源和 `null` 没有默认放行，需要时可以通过同一配置明确添加。
+只填写网页来源，即协议、主机和端口；不要填写 API 路径。修改后重启服务。默认放行 `null`、HTTP/HTTPS 的 `localhost`、`127.0.0.1`、`[::1]`、`tauri.localhost`，以及 `tauri://localhost`、`app://localhost`、`electron://localhost`、`capacitor://localhost`、`ionic://localhost`，包括各自的不同端口。
 
 ## 模型默认配置
 
@@ -46,7 +46,7 @@ AISTUDIO_CORS_ORIGINS=http://192.168.1.10:8000,https://tavern.example.com
 
 ## 核心流程与验证边界
 
-登录、账号保存、浏览器任务、请求发送、回复解析、缓存和工具历史转换均采用上游实现。与上游相比，`session.py` 只增加三处 UTF-8 读取；`chat_service.py` 只增加三处图片目录创建，以及未知过滤分类跳过。
+账号保存、浏览器任务、请求发送、回复解析、缓存和工具历史转换采用上游实现。登录完成检测已修正：仅接受主窗口进入 AI Studio、出现可见聊天输入框，并具有 Google 登录凭据；验证码子页面不会再触发账号保存或关闭登录窗口。与上游相比，`session.py` 只增加三处 UTF-8 读取；`chat_service.py` 只增加三处图片目录创建，以及未知过滤分类跳过。
 
 上游自带的两处工具测试仍然检查旧行为，本分支将它们调整为当前上游的工具结果文本标记、默认工具合并，并补充相关兼容验证。自动化验证命令：
 
@@ -56,4 +56,14 @@ python -X utf8 -m pytest -q
 
 这些自动化测试检查本地接口与请求处理，不代表 Google 一定接受某份已保存的登录状态。若服务已启动、浏览器却跳转到 Google 登录页，应在此副本中重新登录；不要覆盖其他副本的账号资料来反复尝试。
 
-确认酒馆和实际插件均可用后，可在 `.env` 中将 `AISTUDIO_TIMEOUT_STREAM=600` 单独试用，再重启服务。本次默认值仍为 120 秒。
+流式等待时间已按用户要求改为 15 分钟。需要调整时，在 `.env` 中设置 `AISTUDIO_TIMEOUT_STREAM`（秒）并重启服务；普通请求的 `AISTUDIO_TIMEOUT_REPLAY` 仍为 120 秒。
+
+## 多副本使用
+
+双击哪个目录中的 `start.bat`，就会启动哪一份副本。启动脚本会显示完整项目目录，方便核对。
+
+默认各副本使用自己的 `data/accounts`，但 `AISTUDIO_ACCOUNTS_DIR` 或 `AISTUDIO_AUTH_FILE` 可以指定其他目录。如果多份副本指向同一账号目录，账号资料的改动会相互影响。
+
+使用同一 Python 环境的副本会共用依赖库，CloakBrowser 默认也会共用用户目录下 `.cloakbrowser` 中的浏览器程序。修改共用依赖或更新浏览器程序，可能影响其他副本下次启动。相同 HTTP 端口只能同时由一份服务占用。
+
+上传仓库时只提交程序、配置示例和测试；实际 `.env`、`data/` 中的账号资料及诊断备份均由忽略规则排除，应保留在本机。

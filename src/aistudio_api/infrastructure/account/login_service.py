@@ -7,7 +7,7 @@ import logging
 import secrets
 import sys
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -818,11 +818,26 @@ class LoginService:
                 nonlocal detected_email
                 url = frame.url
                 logger.debug("导航到: %s", url)
-                # 检测登录完成：跳转到非登录页面
-                if "accounts.google.com" not in url and "google.com" in url:
-                    # 尝试提取邮箱
-                    try:
-                        detected_email = await page.evaluate("""
+                # Google 验证码也会在子框架中导航，不能据此结束登录。
+                if (
+                    frame != page.main_frame
+                    or urlparse(url).hostname != "aistudio.google.com"
+                    or login_done.is_set()
+                    or login_aborted.is_set()
+                ):
+                    return
+                try:
+                    await page.wait_for_selector("textarea", state="visible", timeout=15000)
+                    if urlparse(page.url).hostname != "aistudio.google.com":
+                        return
+                    cookies = await context.cookies("https://aistudio.google.com/")
+                    if not any(
+                        cookie.get("name") in {"SID", "__Secure-1PSID", "__Secure-3PSID"}
+                        and cookie.get("value")
+                        for cookie in cookies
+                    ):
+                        return
+                    detected_email = await page.evaluate("""
                             () => {
                                 // 尝试从页面获取邮箱
                                 const el = document.querySelector('[data-email]')
@@ -830,9 +845,11 @@ class LoginService:
                                     || document.querySelector('[aria-label*="@"]');
                                 return el ? (el.getAttribute('data-email') || el.textContent.trim()) : null;
                             }
-                        """)
-                    except Exception:
-                        pass
+                    """)
+                except Exception as exc:
+                    logger.debug("AI Studio 登录页面尚未就绪: %s", exc)
+                    return
+                if not login_aborted.is_set():
                     login_done.set()
 
             def on_page_close():
@@ -853,7 +870,7 @@ class LoginService:
             logger.info("打开 Google 登录页面")
             await page.goto(
                 self._build_login_url(ui_locale=ui_locale),
-                wait_until="networkidle",
+                wait_until="domcontentloaded",
             )
 
             terminal_task = asyncio.create_task(

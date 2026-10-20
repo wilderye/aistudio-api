@@ -21,6 +21,14 @@ def _preflight(origin, path="/v1/chat/completions", method="POST"):
     "https://localhost",
     "http://127.0.0.1:8000",
     "http://[::1]:8000",
+    "null",
+    "http://tauri.localhost",
+    "https://tauri.localhost:8000",
+    "tauri://localhost",
+    "app://localhost",
+    "electron://localhost",
+    "capacitor://localhost",
+    "ionic://localhost",
 ])
 def test_local_web_plugin_preflight_allows_chat_headers(origin):
     response = _preflight(origin)
@@ -35,8 +43,8 @@ def test_local_web_plugin_preflight_allows_chat_headers(origin):
 @pytest.mark.parametrize("origin", [
     "https://example.com",
     "http://localhost.example.com:8000",
-    "null",
-    "tauri://localhost",
+    "electron://other-host",
+    "https://tauri.localhost.example.com",
 ])
 def test_unconfigured_other_origins_are_not_allowed(origin):
     response = _preflight(origin)

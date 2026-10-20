@@ -9,7 +9,9 @@
 3. 酒馆使用 OpenAI 兼容接口，API 地址填写 `http://127.0.0.1:8080/v1`。
 4. 直接从酒馆网页发送请求的插件，也可使用这个 API 地址。插件如果自行添加 `/v1`，则只填写服务地址。
 
-当前 `master` 副本位于 `E:\游戏文档\酒馆\antigravity\aistudio-api-master\new_fork_master`，使用该目录中的 `start.bat` 启动。相邻的 `new_fork` 是 `beta` 副本，`new_fork_debug` 是调试副本。原 C 盘目录已迁移，账号和未提交修改一并保留。
+日常使用的原版位于 `E:\游戏文档\酒馆\antigravity\aistudio-api-master\new_fork_master`，使用该目录中的 `start.bat` 启动。原版保持在上次推送的 `master` 提交 `656f6e2`，只保留原账号，已移除新增的无权限账号。
+
+本目录 `E:\游戏文档\酒馆\antigravity\aistudio-api-master\new_fork_master_repair` 使用独立分支 `codex/account-startup-repair`，保存账号切换和浏览器启动的修复。修复版测试使用 18080 端口，原版使用 8080；测试时从修复目录加载源码。两份目录的 `data/accounts` 各自独立，修复版保留两个账号供排查。相邻的 `new_fork` 是 `beta` 副本，`new_fork_debug` 是调试副本。
 
 原目录在 C 盘改名为 `C:\Users\noz\.codex\worktrees\aistudio-upstream-compat\new_fork-migrated-backup`，只作恢复备份；其中的启动脚本和 Git 关联文件已改名禁用，日常使用 E 盘目录。
 
@@ -65,6 +67,8 @@ python -X utf8 -m pytest -q
 ```
 
 这些自动化测试检查本地接口与请求处理，不代表 Google 一定接受某份已保存的登录状态。若服务已启动、浏览器却跳转到 Google 登录页，应在此副本中重新登录；不要覆盖其他副本的账号资料来反复尝试。
+
+2026-10-21 本机验证：用户更换 IP 后，原版通过自己的 `start.bat` 重启，修复版在独立端口启动；两份均完成浏览器预热，使用 `gemma-4-31b-it` 的普通回复和流式回复均返回 `OK`，流式正常结束。修复版 145 项单元测试通过；真实浏览器中的账号页面使用模拟账号验证了切换成功、切换失败后恢复、恢复也失败、登录保存后启用失败及状态读取失败，桌面和 390px 宽度均完成操作检查。模拟账号测试不代表已检查真实 Google 账号对所有模型的权限。
 
 流式等待时间已按用户要求改为 15 分钟。需要调整时，在 `.env` 中设置 `AISTUDIO_TIMEOUT_STREAM`（秒）并重启服务；普通请求的 `AISTUDIO_TIMEOUT_REPLAY` 仍为 120 秒。
 

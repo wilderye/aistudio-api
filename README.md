@@ -193,7 +193,7 @@ python3 main.py client "画一只猫" --image --save cat.png
 | `AISTUDIO_DEFAULT_IMAGE_MODEL` | `gemini-3.1-flash-image-preview` | 默认图片模型 |
 | `AISTUDIO_CAMOUFOX_HEADLESS` | `1` | 无头模式运行浏览器 |
 | `AISTUDIO_TIMEOUT_REPLAY` | `120` | 请求超时（秒） |
-| `AISTUDIO_TIMEOUT_STREAM` | `120` | 流式超时（秒） |
+| `AISTUDIO_TIMEOUT_STREAM` | `900` | 流式超时（秒），默认 15 分钟 |
 | `AISTUDIO_SNAPSHOT_CACHE_TTL` | `3600` | BotGuard snapshot 缓存时间 |
 | `AISTUDIO_ACCOUNT_ROTATION_MODE` | `round_robin` | 轮询模式：`round_robin`、`lru`、`least_rl` |
 | `AISTUDIO_ACCOUNT_COOLDOWN_SECONDS` | `60` | 限流后冷却时间 |

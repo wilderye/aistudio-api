@@ -2,6 +2,8 @@ import asyncio
 import sys
 import types
 
+import pytest
+
 sys.modules.setdefault("dotenv", types.SimpleNamespace(load_dotenv=lambda: None))
 playwright_module = sys.modules.setdefault("playwright", types.ModuleType("playwright"))
 async_api_module = sys.modules.setdefault("playwright.async_api", types.ModuleType("playwright.async_api"))
@@ -13,21 +15,38 @@ from aistudio_api.infrastructure.account.login_service import LoginService, Logi
 
 
 class FakePage:
-    def __init__(self, *, close_on_goto: bool = False) -> None:
+    def __init__(self, *, close_on_goto: bool = False, navigation: str | None = None, main_navigation: bool = False, app_ready: bool = True) -> None:
         self.url = ""
+        self.main_frame = types.SimpleNamespace(url="")
         self._handlers: dict[str, list] = {}
         self._close_on_goto = close_on_goto
+        self._navigation = navigation
+        self._main_navigation = main_navigation
+        self._app_ready = app_ready
 
     def on(self, event: str, callback) -> None:
         self._handlers.setdefault(event, []).append(callback)
 
     async def goto(self, url: str, wait_until: str | None = None) -> None:
         self.url = url
+        self.main_frame.url = url
+        if self._navigation and "ServiceLogin" in url:
+            frame = self.main_frame if self._main_navigation else types.SimpleNamespace(url=self._navigation)
+            if self._main_navigation:
+                self.url = frame.url = self._navigation
+            await self.emit("framenavigated", frame)
         if self._close_on_goto:
             await self.emit("close")
 
     async def evaluate(self, script: str):
-        return None
+        return "login-test@example.com"
+
+    async def wait_for_selector(self, selector: str, *, state: str, timeout: int):
+        if not self._app_ready:
+            raise TimeoutError("app not ready")
+
+    def is_closed(self) -> bool:
+        return False
 
     async def emit(self, event: str, *args) -> None:
         for callback in self._handlers.get(event, []):
@@ -37,9 +56,10 @@ class FakePage:
 
 
 class FakeContext:
-    def __init__(self, page: FakePage) -> None:
+    def __init__(self, page: FakePage, *, authenticated: bool = False) -> None:
         self._page = page
         self._handlers: dict[str, list] = {}
+        self._cookies = [{"name": "SID", "value": "test-session", "domain": ".google.com", "path": "/"}] if authenticated else []
 
     def on(self, event: str, callback) -> None:
         self._handlers.setdefault(event, []).append(callback)
@@ -48,7 +68,10 @@ class FakeContext:
         return self._page
 
     async def storage_state(self) -> dict:
-        return {"cookies": [], "origins": []}
+        return {"cookies": self._cookies, "origins": []}
+
+    async def cookies(self, *args) -> list[dict]:
+        return self._cookies
 
 
 class FakeBrowser:
@@ -146,3 +169,49 @@ def test_login_session_fails_immediately_when_browser_window_is_closed(monkeypat
     assert session.status == LoginStatus.FAILED
     assert session.error == "登录窗口已关闭"
     assert store.saved is False
+
+
+class RecordingAccountStore:
+    def __init__(self):
+        self.saved_states = []
+
+    def save_account(self, **kwargs):
+        self.saved_states.append(kwargs)
+        return types.SimpleNamespace(id="acc_test")
+
+
+@pytest.mark.parametrize("navigation,main_navigation,app_ready,authenticated,success", [
+    ("https://www.google.com/recaptcha/api2/anchor", False, True, False, False),
+    ("https://www.google.com/recaptcha/api2/bframe", False, True, True, False),
+    ("https://aistudio.google.com/app/prompts/new_chat", False, True, True, False),
+    ("https://myaccount.google.com/", True, True, True, False),
+    ("https://aistudio.google.com.evil.example/", True, True, True, False),
+    ("https://aistudio.google.com/app/prompts/new_chat", True, False, True, False),
+    ("https://aistudio.google.com/app/prompts/new_chat", True, True, False, False),
+    ("https://aistudio.google.com/app/prompts/new_chat", True, True, True, True),
+])
+def test_login_only_saves_authenticated_main_aistudio_page(monkeypatch, navigation, main_navigation, app_ready, authenticated, success):
+    page = FakePage(close_on_goto=not success, navigation=navigation, main_navigation=main_navigation, app_ready=app_ready)
+    context = FakeContext(page, authenticated=authenticated)
+    browser = FakeBrowser(context)
+    store = RecordingAccountStore()
+    monkeypatch.setattr(login_module, "CamoufoxManager", lambda port, headless: FakeManager(browser))
+    monkeypatch.setattr(login_module, "build_browser_context_options", lambda headless=None: {})
+
+    async def no_maximize(*args, **kwargs):
+        pass
+
+    async def no_terminal(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(login_module, "async_maximize_page_window", no_maximize)
+    monkeypatch.setattr(LoginService, "_terminal_login_loop", no_terminal)
+    monkeypatch.setattr("playwright.async_api.async_playwright", lambda: FakeAsyncPlaywrightStarter())
+    service = LoginService()
+    session = LoginSession(session_id="login_navigation_test")
+    service._sessions[session.session_id] = session
+    asyncio.run(asyncio.wait_for(service._login_worker(session.session_id, store, None, headless=False, ui_locale=None), timeout=1))
+
+    assert bool(store.saved_states) is success
+    assert session.status == (LoginStatus.COMPLETED if success else LoginStatus.FAILED)
+    assert session.account_id == ("acc_test" if success else None)

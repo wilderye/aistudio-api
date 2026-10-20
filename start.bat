@@ -4,6 +4,8 @@ set "CLOAKBROWSER_AUTO_UPDATE=false"
 set "PYTHONUTF8=1"
 set "PYTHONPATH=%~dp0src"
 cd /d "%~dp0"
+echo Project directory: %CD%
+echo API address: http://127.0.0.1:8080/v1
 echo Installing dependencies...
 python -m pip install -r requirements.txt -q
 if errorlevel 1 (

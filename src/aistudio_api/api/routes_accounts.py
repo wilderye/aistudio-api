@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from aistudio_api.api.dependencies import get_account_service, get_runtime_state
+from aistudio_api.application.account_service import AccountActivationError
 from aistudio_api.infrastructure.account.cookie_parser import parse_cookie_string
 import logging
 
@@ -107,7 +108,7 @@ async def get_active_account(
     account_service=Depends(get_account_service),
 ):
     """获取当前活跃账号。"""
-    account = account_service.get_active_account()
+    account = await account_service.get_active_account_status()
     if account is None:
         raise HTTPException(status_code=404, detail="没有活跃账号")
     return AccountResponse(
@@ -134,9 +135,12 @@ async def activate_account(
     if browser_session is None:
         raise HTTPException(status_code=503, detail="服务未就绪")
 
-    account = await account_service.activate_account(
-        account_id, browser_session, snapshot_cache, busy_lock
-    )
+    try:
+        account = await account_service.activate_account(
+            account_id, browser_session, snapshot_cache, busy_lock
+        )
+    except AccountActivationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在或切换失败")
     return AccountResponse(

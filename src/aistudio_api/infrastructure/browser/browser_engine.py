@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import platform
+from pathlib import Path
 from typing import Any
 
 from aistudio_api.config import build_camoufox_proxy, settings
@@ -28,10 +29,24 @@ def _derive_stable_fingerprint_seed(key: str) -> int:
     return 10000 + (int(digest[:8], 16) % 90000)
 
 
+def _profile_fingerprint_seed(user_data_dir: str) -> int:
+    """Keep an existing browser identity when its profile moves to another folder."""
+    seed_path = Path(user_data_dir) / ".aistudio-fingerprint-seed"
+    if seed_path.exists():
+        seed = int(seed_path.read_text(encoding="ascii").strip())
+        if not 10000 <= seed <= 99999:
+            raise ValueError(f"Invalid browser fingerprint seed: {seed_path}")
+        return seed
+    seed = _derive_stable_fingerprint_seed(user_data_dir)
+    seed_path.parent.mkdir(parents=True, exist_ok=True)
+    seed_path.write_text(str(seed), encoding="ascii")
+    return seed
+
+
 def _build_cloakbrowser_args(
     *,
     headless: bool,
-    stable_fingerprint_key: str | None = None,
+    fingerprint_seed: int | None = None,
     extra_args: list[str] | None = None,
 ) -> list[str]:
     """Build cloakbrowser args without `--no-sandbox`.
@@ -41,11 +56,6 @@ def _build_cloakbrowser_args(
     `--no-sandbox` is easy to spot, and random seeds make a persistent profile
     present a different browser fingerprint on each launch.
     """
-    fingerprint_seed = (
-        _derive_stable_fingerprint_seed(stable_fingerprint_key)
-        if stable_fingerprint_key
-        else None
-    )
     args: list[str] = []
     if not headless:
         args.append("--start-maximized")
@@ -190,7 +200,7 @@ def sync_launch_persistent_context(
         stealth_args=False,
         args=_build_cloakbrowser_args(
             headless=headless,
-            stable_fingerprint_key=user_data_dir,
+            fingerprint_seed=_profile_fingerprint_seed(user_data_dir),
         ),
         **context_kwargs,
     )

@@ -328,7 +328,7 @@
             <h1 style="font-size:24px;font-weight:700">账号管理</h1>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
               <button class="btn" @click="cookieModal.open=true">导入 Cookies</button>
-              <button class="btn btn-primary" :disabled="loginInProgress" @click="addAccount()"
+              <button class="btn btn-primary" :disabled="loginInProgress || accountSwitching" @click="addAccount()"
                 x-text="loginInProgress?'登录中...':'+ 登录账号'"></button>
             </div>
           </div>
@@ -355,12 +355,15 @@
                   min="0">
               </div>
               <button class="btn" @click="saveRotation()">保存设置</button>
-              <button class="btn" @click="forceNext()">强制切换</button>
+              <button class="btn" :disabled="accountSwitching || loginInProgress" @click="forceNext()">强制切换</button>
             </div>
           </div>
           <div class="card">
             <div class="card-head"><span>账号池</span><span style="font-size:13px;color:var(--muted)"
-                x-text="accountRows.length+' 个账号'"></span></div>
+                x-text="accountsStatusError ? '状态待确认' : accountRows.length+' 个账号'"></span></div>
+            <div role="status" style="padding:12px 16px;color:var(--muted)"
+              x-show="accountSwitching || accountsStatusError || !activeId"
+              x-text="accountSwitching ? '正在切换账号，请稍候…' : accountsStatusError || '当前没有激活账号'"></div>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -384,14 +387,17 @@
                       <td><span class="badge badge-green" x-text="a.success||0"></span></td>
                       <td><span class="badge" :class="(a.rate_limited||0)>0?'badge-red':'badge-gray'"
                           x-text="a.rate_limited||0"></span></td>
-                      <td><span class="badge badge-green" x-show="a.id===activeId">激活</span><span
-                          class="badge badge-gray" x-show="a.id!==activeId">待命</span></td>
-                      <td><button class="btn btn-sm" x-show="a.id!==activeId"
+                      <td><span class="badge"
+                          :class="!accountSwitching && !accountsStatusError && a.id===activeId ? 'badge-green' : 'badge-gray'"
+                          x-text="accountSwitching ? '切换中' : accountsStatusError ? '未知' : a.id===activeId ? '激活' : '待命'"></span></td>
+                      <td><button class="btn btn-sm" x-show="a.id!==activeId || accountsStatusError"
+                          :disabled="accountSwitching || loginInProgress"
                           @click="activateAccount(a.id)">手动激活</button></td>
                     </tr>
                   </template>
                   <tr x-show="!accountRows.length">
-                    <td colspan="6" style="text-align:center;color:var(--muted);padding:24px">暂无账号</td>
+                    <td colspan="6" style="text-align:center;color:var(--muted);padding:24px"
+                      x-text="accountsStatusError ? '账号信息暂时无法确认' : '暂无账号'"></td>
                   </tr>
                 </tbody>
               </table>

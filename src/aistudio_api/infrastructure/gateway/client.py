@@ -57,13 +57,15 @@ class AIStudioClient:
     async def warmup(self) -> None:
         """预热浏览器后端并加载 AI Studio 页面。"""
         if self._session is not None:
-            await self._session.ensure_context()
+            async with self._session.operation_lock:
+                await self._session.ensure_context()
             logger.info("浏览器预热完成")
 
     async def switch_auth(self, auth_file: str | None) -> None:
         """切换账号的 auth 文件。"""
         if self._session is not None:
-            await self._session.switch_auth(auth_file)
+            async with self._session.operation_lock:
+                await self._session.switch_auth(auth_file)
 
     def clear_snapshot_cache(self) -> None:
         """清除 snapshot 缓存。"""
@@ -165,29 +167,30 @@ class AIStudioClient:
         sanitize_plain_text: bool = True,
         force_refresh_capture: bool = False,
     ):
-        captured = await self.capture_request(
-            prompt=capture_prompt,
-            model=model,
-            images=capture_images,
-            contents=contents,
-            force_refresh=force_refresh_capture,
-        )
-        async for event in self._streaming_gateway.stream_chat(
-            captured=captured,
-            model=model,
-            system_instruction=None,
-            contents=contents,
-            system_instruction_content=system_instruction_content,
-            tools=tools,
-            safety_settings=safety_settings,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            max_tokens=max_tokens,
-            generation_config_overrides=generation_config_overrides,
-            sanitize_plain_text=sanitize_plain_text,
-        ):
-            yield event
+        async with self._session.operation_lock:
+            captured = await self.capture_request(
+                prompt=capture_prompt,
+                model=model,
+                images=capture_images,
+                contents=contents,
+                force_refresh=force_refresh_capture,
+            )
+            async for event in self._streaming_gateway.stream_chat(
+                captured=captured,
+                model=model,
+                system_instruction=None,
+                contents=contents,
+                system_instruction_content=system_instruction_content,
+                tools=tools,
+                safety_settings=safety_settings,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_tokens=max_tokens,
+                generation_config_overrides=generation_config_overrides,
+                sanitize_plain_text=sanitize_plain_text,
+            ):
+                yield event
 
     async def chat(
         self,
@@ -244,40 +247,41 @@ class AIStudioClient:
         generation_config_overrides: dict | None = None,
         sanitize_plain_text: bool = True,
     ) -> ModelOutput:
-        logger.info("拦截请求: %r", f"{capture_prompt[:20]}...")
-        captured = await self.capture_request(capture_prompt, model=model, images=capture_images, contents=contents)
-        if not captured:
-            raise RequestError(0, "无法拦截请求")
+        async with self._session.operation_lock:
+            logger.info("拦截请求: %r", f"{capture_prompt[:20]}...")
+            captured = await self.capture_request(capture_prompt, model=model, images=capture_images, contents=contents)
+            if not captured:
+                raise RequestError(0, "无法拦截请求")
 
-        modified_body = modify_body(
-            captured.body,
-            model=model,
-            contents=contents,
-            system_instruction_content=system_instruction_content,
-            tools=tools,
-            safety_settings=safety_settings,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            max_tokens=max_tokens,
-            generation_config_overrides=generation_config_overrides,
-            sanitize_plain_text=sanitize_plain_text,
-        )
+            modified_body = modify_body(
+                captured.body,
+                model=model,
+                contents=contents,
+                system_instruction_content=system_instruction_content,
+                tools=tools,
+                safety_settings=safety_settings,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_tokens=max_tokens,
+                generation_config_overrides=generation_config_overrides,
+                sanitize_plain_text=sanitize_plain_text,
+            )
 
-        status, raw = await self._replay_service.replay(captured, body=modified_body)
-        raw_text = raw.decode("utf-8", errors="replace")
-        self._dump_raw_exchange(
-            kind="generate_content",
-            model=model,
-            capture_prompt=capture_prompt,
-            modified_body=modified_body,
-            raw_response=raw_text,
-        )
-        if status != 200:
-            raise classify_error(status, raw_text)
-        output = parse_text_output(raw_text)
-        output.model = model
-        return output
+            status, raw = await self._replay_service.replay(captured, body=modified_body)
+            raw_text = raw.decode("utf-8", errors="replace")
+            self._dump_raw_exchange(
+                kind="generate_content",
+                model=model,
+                capture_prompt=capture_prompt,
+                modified_body=modified_body,
+                raw_response=raw_text,
+            )
+            if status != 200:
+                raise classify_error(status, raw_text)
+            output = parse_text_output(raw_text)
+            output.model = model
+            return output
 
     @classmethod
     def resolve_image_size(cls, size: str) -> list[str] | None:
@@ -296,66 +300,67 @@ class AIStudioClient:
         images: Optional[list[str]] = None,
         contents: Optional[list[AistudioContent]] = None,
     ) -> ModelOutput:
-        logger.info("生图请求: %r, images=%s", f"{prompt[:20]}...", len(images) if images else 0)
-        request_contents = contents or [self._build_user_content(prompt=prompt, images=images)]
-        captured = await self.capture_request(prompt, model=model, images=images, contents=request_contents)
-        if not captured:
-            raise RequestError(0, "无法拦截请求")
+        async with self._session.operation_lock:
+            logger.info("生图请求: %r, images=%s", f"{prompt[:20]}...", len(images) if images else 0)
+            request_contents = contents or [self._build_user_content(prompt=prompt, images=images)]
+            captured = await self.capture_request(prompt, model=model, images=images, contents=request_contents)
+            if not captured:
+                raise RequestError(0, "无法拦截请求")
 
-        generation_config_overrides = None
-        output_resolution = self.resolve_image_size(size)
-        if output_resolution is not None:
-            generation_config_overrides = {"output_resolution": output_resolution}
-        model_defaults = resolve_model_defaults(model)
-        resolved_tools = None
-        if google_search or image_search:
-            resolved_tools = [
-                build_image_generation_search_tool(
-                    google_search=google_search,
-                    image_search=image_search,
-                )
-            ]
-        elif use_default_tools and model_defaults.default_tools:
-            from aistudio_api.infrastructure.gateway.request_rewriter import build_tools_from_names
+            generation_config_overrides = None
+            output_resolution = self.resolve_image_size(size)
+            if output_resolution is not None:
+                generation_config_overrides = {"output_resolution": output_resolution}
+            model_defaults = resolve_model_defaults(model)
+            resolved_tools = None
+            if google_search or image_search:
+                resolved_tools = [
+                    build_image_generation_search_tool(
+                        google_search=google_search,
+                        image_search=image_search,
+                    )
+                ]
+            elif use_default_tools and model_defaults.default_tools:
+                from aistudio_api.infrastructure.gateway.request_rewriter import build_tools_from_names
 
-            resolved_tools = build_tools_from_names(
-                model_defaults.default_tools,
+                resolved_tools = build_tools_from_names(
+                    model_defaults.default_tools,
+                    model=model,
+                    is_image_model=model_defaults.is_image_model,
+                ) or None
+
+            modified_body = modify_body(
+                captured.body,
                 model=model,
-                is_image_model=model_defaults.is_image_model,
-            ) or None
-
-        modified_body = modify_body(
-            captured.body,
-            model=model,
-            contents=request_contents,
-            tools=resolved_tools,
-            generation_config_overrides=generation_config_overrides,
-        )
-        status, raw = await self._replay_service.replay(captured, body=modified_body, timeout=120)
-        raw_text = raw.decode("utf-8", errors="replace")
-        self._dump_raw_exchange(
-            kind="generate_image",
-            model=model,
-            capture_prompt=prompt,
-            modified_body=modified_body,
-            raw_response=raw_text,
-        )
-        if status != 200:
-            raise classify_error(status, raw_text)
-        output = parse_image_output(raw_text)
-        output.model = model
-
-        if output.images:
-            img = output.images[0]
-            ext = "jpg" if "jpeg" in img.mime else "png"
-            path = save_path if save_path and save_path.endswith(f".{ext}") else (
-                f"{save_path}.{ext}" if save_path else f"/tmp/aistudio_generated.{ext}"
+                contents=request_contents,
+                tools=resolved_tools,
+                generation_config_overrides=generation_config_overrides,
             )
-            with open(path, "wb") as file:
-                file.write(img.data)
-            logger.info("图片已保存: %s (%s bytes)", path, img.size)
+            status, raw = await self._replay_service.replay(captured, body=modified_body, timeout=120)
+            raw_text = raw.decode("utf-8", errors="replace")
+            self._dump_raw_exchange(
+                kind="generate_image",
+                model=model,
+                capture_prompt=prompt,
+                modified_body=modified_body,
+                raw_response=raw_text,
+            )
+            if status != 200:
+                raise classify_error(status, raw_text)
+            output = parse_image_output(raw_text)
+            output.model = model
 
-        return output
+            if output.images:
+                img = output.images[0]
+                ext = "jpg" if "jpeg" in img.mime else "png"
+                path = save_path if save_path and save_path.endswith(f".{ext}") else (
+                    f"{save_path}.{ext}" if save_path else f"/tmp/aistudio_generated.{ext}"
+                )
+                with open(path, "wb") as file:
+                    file.write(img.data)
+                logger.info("图片已保存: %s (%s bytes)", path, img.size)
+
+            return output
 
     def _build_user_content(self, prompt: str, images: Optional[list[str]] = None) -> AistudioContent:
         import base64

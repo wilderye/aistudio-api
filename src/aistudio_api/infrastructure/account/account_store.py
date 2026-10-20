@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -144,11 +144,11 @@ class AccountStore:
 
     def _save_registry(self, registry: Registry) -> None:
         """保存注册表。"""
-        self._registry = registry
         self._registry_path.write_text(
             json.dumps(registry.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        self._registry = registry
 
     def list_accounts(self) -> list[AccountMeta]:
         """列出所有账号。"""
@@ -179,11 +179,19 @@ class AccountStore:
         registry = self._load_registry()
         if account_id not in registry.accounts:
             return None
-        registry.active_account_id = account_id
         now = datetime.now(timezone.utc).isoformat()
-        registry.accounts[account_id].last_used = now
-        self._save_registry(registry)
-        return registry.accounts[account_id]
+        account = replace(registry.accounts[account_id], last_used=now)
+        # 写入成功后再替换内存状态，避免磁盘失败时提前显示新账号。
+        self._save_registry(Registry(
+            accounts={**registry.accounts, account_id: account},
+            active_account_id=account_id,
+        ))
+        return account
+
+    def clear_active_account(self) -> None:
+        """清除激活记录，不选择未经浏览器启用的其他账号。"""
+        registry = self._load_registry()
+        self._save_registry(Registry(accounts=dict(registry.accounts)))
 
     def save_account(
         self,
@@ -225,8 +233,6 @@ class AccountStore:
         )
         # 更新注册表
         registry.accounts[account_id] = meta
-        if registry.active_account_id is None:
-            registry.active_account_id = account_id
         self._save_registry(registry)
         return meta
 
@@ -242,7 +248,7 @@ class AccountStore:
         # 从注册表移除
         del registry.accounts[account_id]
         if registry.active_account_id == account_id:
-            registry.active_account_id = next(iter(registry.accounts), None)
+            registry.active_account_id = None
         self._save_registry(registry)
         return True
 

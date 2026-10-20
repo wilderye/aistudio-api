@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -9,6 +10,10 @@ from aistudio_api.infrastructure.account.account_store import AccountStore, Acco
 from aistudio_api.infrastructure.account.login_service import LoginService, LoginSession
 
 logger = logging.getLogger("aistudio.account")
+
+
+class AccountActivationError(RuntimeError):
+    """账号未能启用；浏览器恢复完成后才向调用方报告失败。"""
 
 
 class AccountService:
@@ -21,6 +26,7 @@ class AccountService:
     ) -> None:
         self._store = account_store
         self._login = login_service
+        self._activation_lock = asyncio.Lock()
 
     def list_accounts(self) -> list[AccountMeta]:
         """列出所有账号。"""
@@ -33,6 +39,11 @@ class AccountService:
     def get_active_account(self) -> AccountMeta | None:
         """获取当前活跃账号。"""
         return self._store.get_active_account()
+
+    async def get_active_account_status(self) -> AccountMeta | None:
+        """切换或恢复结束后，返回可供页面显示的账号。"""
+        async with self._activation_lock:
+            return self.get_active_account()
 
     async def start_login(
         self,
@@ -67,40 +78,62 @@ class AccountService:
             account_id: 目标账号 ID
             browser_session: BrowserSession 实例
             snapshot_cache: SnapshotCache 实例
-            busy_lock: asyncio.Lock，确保切换时无请求在飞行中。None 则跳过锁
+            busy_lock: 请求并发限制。None 表示调用方已占用请求名额
             keep_snapshot_cache: 是否保留 snapshot 缓存（默认 False，避免切号后复用旧 snapshot）
 
         Returns:
             切换后的账号元数据，或 None（如果账号不存在）
         """
-        # 验证账号存在
-        account = self._store.get_account(account_id)
-        if account is None:
-            return None
-
         async def _do_switch():
-            # 获取 auth 路径
-            auth_path = self._store.get_auth_path_optional(account_id, require_exists=False)
-            if auth_path is None:
-                logger.error("账号 %s 的账号目录不存在", account_id)
-                return None
+            # busy_lock 可以是允许多个请求的 Semaphore；账号切换本身仍须串行。
+            async with self._activation_lock, browser_session.operation_lock:
+                account = self._store.get_account(account_id)
+                auth_path = self._store.get_auth_path_optional(account_id, require_exists=False)
+                if account is None or auth_path is None:
+                    return None
 
-            # 切换 BrowserSession 的 auth
-            await browser_session.switch_auth(str(auth_path))
-            await browser_session.ensure_context()
+                previous = self._store.get_active_account()
+                previous_auth = (
+                    self._store.get_auth_path_optional(previous.id, require_exists=False)
+                    if previous else None
+                )
+                try:
+                    await browser_session.switch_auth(str(auth_path))
+                    await browser_session.ensure_context()
+                    if not keep_snapshot_cache and snapshot_cache is not None:
+                        snapshot_cache.clear()
+                    account = self._store.set_active_account(account_id)
+                    if account is None:
+                        raise RuntimeError("账号记录已被删除，无法启用")
+                except (Exception, asyncio.CancelledError) as exc:
+                    logger.warning("账号 %s 启用失败，正在恢复原账号: %s", account_id, exc)
+                    # 即使恢复同一账号，也已更换浏览器页面，旧 snapshot 不可再用。
+                    if snapshot_cache is not None:
+                        snapshot_cache.clear()
+                    restored = False
+                    if previous_auth is not None:
+                        try:
+                            await browser_session.switch_auth(str(previous_auth))
+                            await browser_session.ensure_context()
+                            restored = True
+                        except Exception:
+                            logger.exception("恢复原账号 %s 失败", previous.id)
+                    if not restored:
+                        self._store.clear_active_account()
+                        await browser_session.switch_auth(None)
+                    if isinstance(exc, asyncio.CancelledError):
+                        raise
+                    reason = str(exc).splitlines()[0][:240] if str(exc) else type(exc).__name__
+                    status = (
+                        f"已恢复原账号 {previous.id}"
+                        if restored else "当前没有激活账号，请重新启用账号"
+                    )
+                    raise AccountActivationError(f"账号启用失败；{status}。原因：{reason}") from exc
 
-            # 切号后默认清理 snapshot，避免旧页面态和新账号 cookies 混用。
-            if not keep_snapshot_cache and snapshot_cache is not None:
-                snapshot_cache.clear()
-                logger.info("已清除 snapshot 缓存")
+                logger.info("已切换到账号: %s (%s)", account_id, account.name)
+                return account
 
-            # 更新注册表
-            self._store.set_active_account(account_id)
-
-            logger.info("已切换到账号: %s (%s)", account_id, account.name)
-            return account
-
-        # 获取 busy_lock 确保无请求在飞行中
+        # 复用请求并发限制；浏览器操作由 operation_lock 互斥。
         if busy_lock is not None:
             async with busy_lock:
                 return await _do_switch()

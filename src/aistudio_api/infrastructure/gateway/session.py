@@ -14,8 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from aistudio_api.config import settings
+from aistudio_api.domain.errors import AuthError
 from aistudio_api.infrastructure.account.account_store import AccountStore
 from aistudio_api.infrastructure.browser.browser_engine import (
     build_browser_context_options,
@@ -34,6 +36,13 @@ AI_STUDIO_URL_FALLBACK = "https://aistudio.google.com/app/prompts/new_chat"
 GOOGLE_LOGIN_BOOTSTRAP_URL = (
     "https://accounts.google.com/ServiceLogin?continue=https://aistudio.google.com"
 )
+AI_STUDIO_READY_JS = r"""mw:(() => ({
+    has_dms: !!window.default_MakerSuite,
+    has_textarea: Array.from(document.querySelectorAll('textarea')).some(input =>
+        !input.disabled && input.getClientRects().length > 0 &&
+        getComputedStyle(input).visibility === 'visible'
+    ),
+}))()"""
 INSTALL_HOOKS_JS = r"""
 mw:((() => {
     // Verify hooks are actually present on XHR prototype, not just a stale flag
@@ -157,6 +166,8 @@ class BrowserSession:
         self._snap_key: str | None = None
         self._templates: dict[str, dict[str, Any]] = {}
         self._bootstrap_template: dict[str, Any] | None = None
+        # 生成请求和切号共用同一浏览器，不允许在一次生成中途替换账号。
+        self.operation_lock = asyncio.Lock()
         self._executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="aistudio-browser",
@@ -244,7 +255,8 @@ class BrowserSession:
                         except Exception as restore_exc:
                             log.warning("[import_cookies] failed to restore original browser context: %s", restore_exc)
 
-        return await self._run_sync(_sync)
+        async with self.operation_lock:
+            return await self._run_sync(_sync)
 
     async def capture_template(self, model: str) -> dict[str, Any]:
         return await self._run_sync(self._capture_template_sync, model)
@@ -532,7 +544,7 @@ class BrowserSession:
 
     def _switch_auth_sync(self, auth_file: str | None) -> None:
         self._auth_file = auth_file
-        self._profile_dir = self._derive_profile_dir(auth_file)
+        self._profile_dir = self._derive_profile_dir(auth_file) if auth_file else None
         self._templates.clear()
         self._bootstrap_template = None
         self._close_sync()
@@ -541,6 +553,14 @@ class BrowserSession:
         if self._ctx is not None and self._hook_page is not None and not self._hook_page.is_closed():
             return self._ctx
 
+        try:
+            return self._start_browser_sync()
+        except Exception:
+            # 未加载成功的页面不能在后续请求中被当成可用浏览器。
+            self._close_sync()
+            raise
+
+    def _start_browser_sync(self):
         import time as _t
         _t0 = _t.time()
 
@@ -598,45 +618,31 @@ class BrowserSession:
         self._hook_page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
         sync_maximize_page_window(self._hook_page)
 
-        # First, see whether the persistent profile / current context is already alive.
-        try:
-            self._hook_page.goto("https://aistudio.google.com/", wait_until="domcontentloaded", timeout=15000)
-            if "accounts.google.com" not in (self._hook_page.url or ""):
-                profile_label = "profile" if profile_dir else "auth.json cache"
-                log.info("[chromium-auth] %s hit", profile_label)
-                self._goto_aistudio_sync(self._hook_page)
-                self._install_hooks_sync(self._hook_page)
-                log.debug(f"[timing] page loaded (cached) in {_t.time()-_t0:.1f}s")
-                return self._ctx
-        except Exception as e:
-            log.debug("[chromium-auth] initial profile check failed: %s", e)
-
         # Only seed a fresh profile from auth.json once. After a profile exists,
         # auth.json must not be re-injected or it can corrupt the browser state.
+        seeded_cookie_count = 0
         if should_seed_from_auth and self._auth_file and Path(self._auth_file).exists():
             try:
                 data = json.loads(Path(self._auth_file).read_text(encoding="utf-8"))
                 cached = data.get("cookies") or []
                 if cached:
                     self._ctx.add_cookies(cached)
+                    seeded_cookie_count = len(cached)
                     self._bootstrap_google_session_sync(self._hook_page)
-                    if "accounts.google.com" not in (self._hook_page.url or ""):
-                        log.info("[chromium-auth] auth.json seeded context (%d cookies)", len(cached))
-                        self._save_cookies_sync()
-                        self._goto_aistudio_sync(self._hook_page)
-                        self._install_hooks_sync(self._hook_page)
-                        log.debug(f"[timing] page loaded (cached) in {_t.time()-_t0:.1f}s")
-                        return self._ctx
-                    log.info("[chromium-auth] auth.json appears expired")
             except Exception as e:
-                log.debug("[chromium-auth] auth.json load failed: %s", e)
+                log.debug("[chromium-auth] auth.json bootstrap failed: %s", e)
         elif profile_dir:
-            log.info("[chromium-auth] existing profile present; skipped auth.json seeding to avoid cookie pollution")
+            log.debug("[chromium-auth] existing profile present; skipped auth.json seeding to avoid cookie pollution")
 
+        # 所有认证来源共用一次页面加载，失败时由调用方清理或恢复账号。
         log.debug(f"[timing] browser launched in {_t.time()-_t0:.1f}s")
         self._goto_aistudio_sync(self._hook_page)
         log.debug(f"[timing] page loaded in {_t.time()-_t0:.1f}s")
         self._install_hooks_sync(self._hook_page)
+        if seeded_cookie_count:
+            log.info("[chromium-auth] auth.json seeded context (%d cookies)", seeded_cookie_count)
+        elif profile_dir:
+            log.info("[chromium-auth] profile hit")
         log.debug(f"[timing] hooks installed in {_t.time()-_t0:.1f}s")
         return self._ctx
 
@@ -1136,41 +1142,75 @@ mw:((hash) => {
         )
 
     def _goto_aistudio_sync(self, page) -> None:
-        import time as _t
+        from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
+
         last_exc = None
         for url in (AI_STUDIO_URL, AI_STUDIO_URL_FALLBACK):
+            started = time.monotonic()
             try:
-                _t0 = _t.time()
-                page.goto(url, wait_until="networkidle", timeout=30000)
-                log.debug(f"[timing] goto {url} took {_t.time()-_t0:.1f}s")
-                # 检查是否被重定向到登录页
-                current_url = page.url or ""
-                if "accounts.google.com" in current_url and "signin" in current_url:
-                    raise RuntimeError(
-                        f"Cookie 认证失败，已被重定向到 Google 登录页。"
-                        f" (url={current_url})"
-                    )
-                # Wait for SPA framework and chat UI to render
-                for _ in range(60):
-                    page.wait_for_timeout(1000)
-                    has_dms = page.evaluate("mw:!!window.default_MakerSuite")
-                    has_textarea = page.query_selector("textarea") is not None
-                    if has_dms and has_textarea:
-                        log.debug(f"[timing] UI ready (dms+textarea) after {_t.time()-_t0:.1f}s")
-                        self._verify_account_identity_sync(page)
-                        self._save_cookies_sync()
-                        return
-                    if has_dms and _ > 20:
-                        page.evaluate(DIALOG_CLEANUP_JS)
-                log.debug(f"[timing] UI partially ready after {_t.time()-_t0:.1f}s (dms={has_dms}, textarea={has_textarea})")
-                self._verify_account_identity_sync(page)
-                self._save_cookies_sync()
-                return
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                except PlaywrightError as exc:
+                    if not isinstance(exc, PlaywrightTimeoutError) and not self._is_navigation_interruption(exc):
+                        raise
+                    # 跳转或持续网络活动不代表最终页面不可用，先检查实际页面。
+                    log.debug("[navigation] checking final page after interrupted wait: %s", exc)
+                self._wait_for_aistudio_ready_sync(page)
+            except AuthError:
+                raise
             except Exception as exc:
-                log.debug(f"[timing] goto {url} failed after {_t.time()-_t0:.1f}s: {exc}")
+                log.debug("[timing] goto %s failed after %.1fs: %s", url, time.monotonic() - started, exc)
+                if page.is_closed():
+                    raise
                 last_exc = exc
+                continue
+            # 只有页面真正就绪后才核对账号、保存登录信息。
+            self._verify_account_identity_sync(page)
+            self._save_cookies_sync()
+            log.debug("[timing] UI ready after %.1fs (url=%s)", time.monotonic() - started, page.url)
+            return
         if last_exc is not None:
             raise last_exc
+
+    @staticmethod
+    def _is_navigation_interruption(exc: Exception) -> bool:
+        return any(message in str(exc) for message in (
+            "interrupted by another navigation",
+            "Execution context was destroyed",
+            "Cannot find context with specified id",
+        ))
+
+    def _wait_for_aistudio_ready_sync(self, page, timeout_ms: int = 60000) -> None:
+        from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
+
+        started = time.monotonic()
+        deadline = started + timeout_ms / 1000
+        state = {"has_dms": False, "has_textarea": False}
+        while time.monotonic() < deadline:
+            if page.is_closed():
+                raise RuntimeError("AI Studio 页面已关闭，无法完成加载")
+            hostname = urlparse(page.url or "").hostname
+            if hostname == "accounts.google.com":
+                raise AuthError("Google 登录已失效或需要再次验证，请在账号管理中重新登录")
+            if hostname == "aistudio.google.com":
+                try:
+                    state = page.evaluate(AI_STUDIO_READY_JS)
+                    if state["has_dms"] and state["has_textarea"]:
+                        return
+                    if state["has_dms"] and time.monotonic() - started > 20:
+                        page.evaluate(DIALOG_CLEANUP_JS)
+                except PlaywrightError as exc:
+                    if not self._is_navigation_interruption(exc):
+                        raise
+            page.wait_for_timeout(500)
+        missing = []
+        if not state["has_dms"]:
+            missing.append("网页内部功能尚未加载")
+        if not state["has_textarea"]:
+            missing.append("聊天输入框尚不可用")
+        raise PlaywrightTimeoutError(
+            f"AI Studio 页面未准备完成：{'；'.join(missing)} (url={page.url})"
+        )
 
     def _install_hooks_sync(self, page) -> None:
         result = page.evaluate(INSTALL_HOOKS_JS)

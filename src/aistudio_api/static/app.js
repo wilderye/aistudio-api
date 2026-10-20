@@ -4,6 +4,7 @@ function app() {
     view: 'chat', sidebarOpen: false, configOpen: false, openSelect: null,
     stats: {}, rotationMode: 'round_robin', rotCfg: { mode: 'round_robin', cooldown: 60 },
     accounts: [], rotationAccounts: {}, activeId: '', activeAccount: {},
+    accountSwitching: false, accountsStatusError: '', accountsRefreshTimer: null,
     models: [], model: '',
     auth: { token: '' },
     authEnabled: false,
@@ -24,7 +25,15 @@ function app() {
       this.$watch('model', () => this.saveToCache());
       this.$watch('auth.token', () => this.saveToCache());
       document.addEventListener('click', () => this.openSelect = null);
+      this.accountsRefreshTimer = setInterval(() => {
+        if (this.view === 'accounts' && !this.accountSwitching && !document.hidden) {
+          this.loadAccounts();
+          this.loadRotation();
+        }
+      }, 5000);
     },
+
+    destroy() { clearInterval(this.accountsRefreshTimer) },
 
     async checkAuth() {
       try {
@@ -159,7 +168,33 @@ function app() {
 
     async loadModels() { try { const r = await this.apiFetch('/v1/models'); const d = await r.json(); this.models = d.data || []; if (!this.model && this.models.length) this.model = this.models[0].id; this.saveToCache(); } catch (e) { } },
     async loadStats() { try { const r = await this.apiFetch('/stats'); const d = await r.json(); this.stats = d.models || {} } catch (e) { } },
-    async loadAccounts() { try { const [a, b] = await Promise.all([this.apiFetch('/accounts').then(r => r.json()), this.apiFetch('/accounts/active').then(r => r.json())]); this.accounts = a || []; this.activeId = b?.id || ''; this.activeAccount = b || {} } catch (e) { } },
+    async loadAccounts() {
+      try {
+        const [accountsResult, activeResult] = await Promise.allSettled([
+          this.apiFetch('/accounts').then(response => {
+            if (!response.ok) throw new Error('账号列表查询失败');
+            return response.json();
+          }),
+          this.apiFetch('/accounts/active').then(response => {
+            if (response.status === 404) return null;
+            if (!response.ok) throw new Error('激活账号查询失败');
+            return response.json();
+          })
+        ]);
+        if (accountsResult.status === 'fulfilled') this.accounts = accountsResult.value || [];
+        if (accountsResult.status === 'rejected' || activeResult.status === 'rejected') {
+          throw new Error('账号状态查询失败');
+        }
+        const active = activeResult.value;
+        this.activeId = active?.id || '';
+        this.activeAccount = active || {};
+        this.accountsStatusError = '';
+      } catch (e) {
+        this.activeId = '';
+        this.activeAccount = {};
+        this.accountsStatusError = '无法确认当前激活账号，请刷新重试';
+      }
+    },
     async loadRotation() { try { const r = await this.apiFetch('/rotation'); const d = await r.json(); this.rotationMode = d.mode || 'round_robin'; this.rotCfg.mode = d.mode || 'round_robin'; this.rotCfg.cooldown = d.cooldown_seconds || 60; this.rotationAccounts = d.accounts || {} } catch (e) { } },
 
     get accountRows() { return this.accounts.map(a => ({ ...a, ...(this.rotationAccounts[a.id] || {}) })) },
@@ -167,10 +202,39 @@ function app() {
     get totalRL() { return Object.values(this.stats).reduce((s, v) => s + (v.rate_limited || 0), 0) },
 
     async saveRotation() { try { await this.apiFetch('/rotation/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.rotCfg.mode, cooldown_seconds: this.rotCfg.cooldown }) }); this.showToast('已保存'); this.loadRotation() } catch (e) { this.showToast('保存失败') } },
-    async forceNext() { try { await this.apiFetch('/rotation/next', { method: 'POST' }); this.showToast('已切换账号'); this.loadAccounts() } catch (e) { this.showToast('切换失败') } },
-    async activateAccount(id) { try { await this.apiFetch(`/accounts/${id}/activate`, { method: 'POST' }); this.showToast('已激活'); this.loadAccounts(); this.loadRotation() } catch (e) { this.showToast('激活失败') } },
+    async changeActiveAccount(url, successMessage, failureMessage) {
+      if (this.accountSwitching) return false;
+      this.accountSwitching = true;
+      try {
+        const response = await this.apiFetch(url, { method: 'POST' });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const reason = typeof data.detail === 'string' ? data.detail : data.detail?.message;
+          this.showToast(`${failureMessage}：${reason || '服务器未能完成账号切换'}`);
+          return false;
+        }
+        this.showToast(successMessage);
+        return true;
+      } catch (e) {
+        this.showToast(`${failureMessage}：无法连接服务，请刷新确认当前账号`);
+        return false;
+      } finally {
+        await Promise.all([this.loadAccounts(), this.loadRotation()]);
+        this.accountSwitching = false;
+      }
+    },
+    async forceNext() {
+      return this.changeActiveAccount('/rotation/next', '已切换账号', '切换失败');
+    },
+    async activateAccount(id, afterLogin = false) {
+      return this.changeActiveAccount(
+        `/accounts/${id}/activate`,
+        afterLogin ? '登录成功，账号已激活' : '已激活',
+        afterLogin ? '账号已保存，但未能启用' : '激活失败'
+      );
+    },
     async addAccount() {
-      if (this.loginInProgress) return;
+      if (this.loginInProgress || this.accountSwitching) return;
       this.loginInProgress = true;
       try {
         const r = await this.apiFetch('/accounts/login/start', {
@@ -204,11 +268,11 @@ function app() {
           }
           if (d.status === 'completed') {
             if (d.account_id) {
-              await this.apiFetch(`/accounts/${d.account_id}/activate`, { method: 'POST' });
+              await this.activateAccount(d.account_id, true);
+            } else {
+              this.showToast('登录已完成，但未收到账号信息，无法启用');
+              await this.loadAccounts();
             }
-            this.showToast(`登录成功${d.email ? ': ' + d.email : ''}`);
-            this.loadAccounts();
-            this.loadRotation();
             return;
           }
           if (d.status === 'failed') {

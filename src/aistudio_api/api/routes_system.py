@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from aistudio_api.application.api_service import health_response, stats_response
 from aistudio_api.api.response_models import HealthResponse, StatsResponse
 from aistudio_api.api.dependencies import get_runtime_state
+from aistudio_api.application.account_service import AccountActivationError
 
 public_router = APIRouter()
 protected_router = APIRouter()
@@ -162,13 +163,16 @@ async def force_next_account(runtime_state=Depends(get_runtime_state)):
     if not all([account_service, client, busy_lock]):
         raise HTTPException(503, detail="服务未就绪")
 
-    result = await account_service.activate_account(
-        next_account.id,
-        client._session,
-        runtime_state.snapshot_cache,
-        busy_lock,
-        keep_snapshot_cache=False,
-    )
+    try:
+        result = await account_service.activate_account(
+            next_account.id,
+            client._session,
+            runtime_state.snapshot_cache,
+            busy_lock,
+            keep_snapshot_cache=False,
+        )
+    except AccountActivationError as exc:
+        raise HTTPException(503, detail=str(exc)) from exc
 
     if result is None:
         raise HTTPException(500, detail="切换失败")

@@ -19,6 +19,7 @@ from aistudio_api.api.response_models import (
     StatsTotalsResponse,
 )
 from aistudio_api.api.state import runtime_state
+from aistudio_api.application.account_service import AccountActivationError
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
 from aistudio_api.infrastructure.gateway.wire_types import AistudioPart
 
@@ -63,13 +64,17 @@ async def try_switch_account() -> bool:
     if not all([account_service, client]):
         return False
 
-    result = await account_service.activate_account(
-        next_account.id,
-        client._session,
-        runtime_state.snapshot_cache,
-        None,  # skip lock — caller already holds it
-        keep_snapshot_cache=False,
-    )
+    try:
+        result = await account_service.activate_account(
+            next_account.id,
+            client._session,
+            runtime_state.snapshot_cache,
+            None,  # skip lock — caller already holds it
+            keep_snapshot_cache=False,
+        )
+    except AccountActivationError as exc:
+        logger.warning("自动切换账号失败: %s", exc)
+        return False
     return result is not None
 
 
@@ -87,7 +92,11 @@ async def ensure_active_account(attempt: int) -> None:
         return
     account_svc = runtime_state.account_service
     if account_svc and not account_svc.get_active_account():
-        await try_switch_account()
+        if not await try_switch_account():
+            raise HTTPException(503, detail={
+                "message": "没有成功启用的账号，请在账号管理中重新启用账号",
+                "type": "service_unavailable",
+            })
 
 
 def record_rotator_event(event: str) -> None:

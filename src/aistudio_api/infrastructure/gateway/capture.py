@@ -35,7 +35,6 @@ class RequestCaptureService:
     def __init__(self, session: BrowserSession, snapshot_cache: SnapshotCache):
         self._session = session
         self._snapshot_cache = snapshot_cache
-        self._templates: dict[str, CapturedRequest] = {}
 
     async def capture(
         self,
@@ -67,12 +66,10 @@ class RequestCaptureService:
         return captured
 
     async def _ensure_template(self, model: str) -> CapturedRequest:
-        if model in self._templates:
-            return self._templates[model]
-
+        # BrowserSession 已按当前浏览器缓存模板，切号/重建页面时会清除。
+        # 不在本层保留另一份，否则切号后可能复用原账号的请求信息。
         captured = await self._session.capture_template(model)
         template = CapturedRequest(**captured)
-        self._templates[model] = template
         logger.info("Hook 模板已就绪: model=%s", model)
         return template
 
